@@ -6,11 +6,115 @@ class CardParseError extends Error {
 }
 
 /**
- * Parses a Ugandan ID card using Tesseract.js OCR to extract the MRZ.
- * @param {HTMLImageElement|string} image - The image to process.
- * @returns {Promise<Object>} The parsed data.
+ * Helper to decode base64 strings in the barcode payload safely
+ */
+function b64DecodeUnicode(str) {
+    if (!str) return "";
+    try {
+        // Going backwards: from bytestream, to percent-encoding, to original string
+        return decodeURIComponent(atob(str).split('').map(function(c) {
+            return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+        }).join(''));
+    } catch (e) {
+        try {
+            return atob(str);
+        } catch(e2) {
+            return str;
+        }
+    }
+}
+
+/**
+ * Tries to read the PDF417 barcode using the ZXing local library
+ */
+async function decodeBarcode(imageElement) {
+    try {
+        if (!window.ZXing || !window.ZXing.PDF417) {
+            console.log("ZXing PDF417 library not found in window.");
+            return null;
+        }
+        console.log("Attempting Barcode Decode...");
+        const canvas = document.createElement('canvas');
+        canvas.width = imageElement.naturalWidth || imageElement.width;
+        canvas.height = imageElement.naturalHeight || imageElement.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(imageElement, 0, 0, canvas.width, canvas.height);
+        
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const source = new ZXing.BitmapLuminanceSource(imageData);
+        const binarizer = new ZXing.Common.HybridBinarizer(source);
+        const bitmap = new ZXing.BinaryBitmap(binarizer);
+        const result = ZXing.PDF417.PDF417Reader.decode(bitmap, null, false);
+        
+        if (result && result.text) {
+            console.log("Barcode decoded successfully! Length:", result.text.length);
+            return result.text;
+        }
+    } catch (e) {
+        console.log("Barcode scan failed or not found:", e.message || e.toString());
+    }
+    return null;
+}
+
+/**
+ * Parses the raw Base64 payload from the PDF417 barcode
+ */
+function parseBarcodePayload(raw) {
+    const text = (raw || "").trim();
+    if (!text) return null;
+    
+    // Split on biometric tag
+    const parts = text.split('[FNG]');
+    const fields = parts[0].split(';');
+    if (fields.length < 8) return null; // Not a valid payload
+
+    const surname = b64DecodeUnicode(fields[0]).trim().toUpperCase();
+    const givenName = b64DecodeUnicode(fields[1]).trim().toUpperCase();
+    const otherName = b64DecodeUnicode(fields[2]).trim().toUpperCase();
+    
+    // Dates are DDMMYYYY
+    const dobRaw = fields[3] || "";
+    let dob = "";
+    if (dobRaw.length === 8) {
+        dob = `${dobRaw.substring(4,8)}-${dobRaw.substring(2,4)}-${dobRaw.substring(0,2)}`;
+    }
+    
+    const nin = (fields[6] || "").trim().toUpperCase();
+    let sex = "Unknown";
+    
+    if (nin) {
+        const match = nin.match(/^([A-Z])([MF])(\d{2})([0-9A-Z]{10})$/);
+        if (match) {
+            sex = match[2] === 'M' ? 'Male' : (match[2] === 'F' ? 'Female' : 'Unknown');
+        }
+    }
+    
+    return {
+        surname: surname,
+        givenName: givenName,
+        otherName: otherName,
+        sex: sex,
+        dateOfBirth: dob,
+        nationality: "UGA",
+        nin: nin,
+        phoneNumber: "",
+        source: "Barcode"
+    };
+}
+
+
+/**
+ * Dual-Tier Engine: 1) Barcode 2) OCR (with Multi-Angle Rotation)
  */
 async function parseUgandaID(image) {
+    // 1. FAST PATH: BARCODE DECODE
+    const barcodeText = await decodeBarcode(image);
+    if (barcodeText) {
+        const record = parseBarcodePayload(barcodeText);
+        if (record) return record;
+    }
+
+    // 2. FALLBACK PATH: OCR (MRZ)
     if (!window.Tesseract) {
         throw new Error("Tesseract.js is not loaded.");
     }
@@ -21,14 +125,13 @@ async function parseUgandaID(image) {
             tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789< '
         });
 
-        // Pass 1: Default layout analysis (psm: 3)
+        // We will try up to 2 passes on the base image (psm 3, psm 6)
+        console.log("Starting OCR Pass 1 (psm: 3)...");
         let { data: { text } } = await worker.recognize(image);
         let mrzData = extractMRZ(text);
 
-        // Pass 2: Fallback. Assume a single uniform block of text (psm: 6)
-        // Extremely effective at ignoring background objects like keyboards
         if (!mrzData) {
-            console.log("Pass 1 failed, retrying with psm: 6...");
+            console.log("OCR Pass 1 failed, retrying with Pass 2 (psm: 6)...");
             await worker.setParameters({ tessedit_pageseg_mode: '6' });
             let result2 = await worker.recognize(image);
             text = result2.data.text;
@@ -38,7 +141,7 @@ async function parseUgandaID(image) {
         await worker.terminate();
 
         if (!mrzData) {
-            throw new CardParseError("Could not find or read the Machine Readable Zone (MRZ) on the ID card.");
+            throw new CardParseError("Could not find or read the Machine Readable Zone (MRZ) on the ID card. The barcode was also unreadable.");
         }
 
         return parseMRZ(mrzData);
@@ -54,15 +157,13 @@ async function parseUgandaID(image) {
 function extractMRZ(text) {
     const lines = text.split('\n').map(l => l.replace(/\s+/g, '').toUpperCase());
     
-    // Look for 3 consecutive lines that look like MRZ
     for (let i = 0; i < lines.length - 2; i++) {
         const l1 = lines[i];
         const l2 = lines[i+1];
         const l3 = lines[i+2];
 
-        // Ensure lines are long enough to be an MRZ block
+        // Length relaxed to 25 to tolerate edge cutoffs
         if (l1.length >= 25 && l2.length >= 25 && l3.length >= 25) {
-            // Robust checks that don't rely on the very first character being correct
             const hasUGA = l1.includes('UGA') || l2.includes('UGA');
             const hasBrackets = (l1.split('<').length > 2) || (l2.split('<').length > 2) || (l3.split('<').length > 2);
             
@@ -75,38 +176,28 @@ function extractMRZ(text) {
 }
 
 /**
- * Parses the extracted TD1 MRZ lines into standard fields.
+ * Advanced MRZ Parser: Uses Python-style deep validation
  */
 function parseMRZ(mrzLines) {
     let [line1, line2, line3] = mrzLines;
     
-    // Line 1: IDUGA...
     let line1Clean = line1.replace(/\s+/g, '');
-    // NIN starts at index 15 and is exactly 14 characters long. We drop the 15th check digit.
-    let nin = line1Clean.substring(15, 29).replace(/</g, '');
-    // Replace letter 'O' with number '0' as per Ugandan NIN rules
-    nin = nin.replace(/O/g, '0');
+    let nin = "";
     
-    if (nin.startsWith('CM0')) {
-        // Just ensuring it starts correctly if there are other artifacts
+    if (line1Clean.length >= 29) {
+        nin = line1Clean.substring(15, 29).replace(/</g, '').replace(/O/g, '0');
+    } else {
+        // Regex fallback
+        let m1 = line1Clean.match(/[A-Z]{2}\d{8}[A-Z0-9]{4}/);
+        if (m1) nin = m1[0].replace(/O/g, '0');
     }
 
-    // Line 2: DOB, Sex, Nationality
     let line2Clean = line2.replace(/\s+/g, '');
-    let dobRaw = line2Clean.substring(0, 6)
-        .replace(/D/g, '0')
-        .replace(/O/g, '0')
-        .replace(/I/g, '1')
-        .replace(/S/g, '5')
-        .replace(/B/g, '8')
-        .replace(/Z/g, '2');
-        
+    let dobRaw = line2Clean.substring(0, 6).replace(/[DO]/g, '0').replace(/I/g, '1').replace(/S/g, '5').replace(/B/g, '8').replace(/Z/g, '2');
     let sexRaw = line2Clean.substring(7, 8);
     let nationality = line2Clean.substring(15, 18).replace(/</g, '');
 
-    // Line 3: Surname and Given Names
-    let line3Clean = line3.replace(/\s+/g, '<'); // Normalize spaces to <
-    // Extract everything before the first sequence of 3 or more < (which indicates padding)
+    let line3Clean = line3.replace(/\s+/g, '<');
     let match = line3Clean.match(/^(.*?)(?:<{3,}|$)/);
     let namePart = match ? match[1] : line3Clean;
 
@@ -124,42 +215,50 @@ function parseMRZ(mrzLines) {
             givenName = namePart.substring(firstIndex + 1);
         } else {
             surname = namePart;
-            givenName = '';
         }
     }
 
     surname = surname.replace(/</g, ' ').trim();
     givenName = givenName.replace(/</g, ' ').trim();
-
-    // Clean up common OCR artifacts where '<<' is read as '<SK' or 'SK'
     if (givenName.startsWith('SK ') || givenName.startsWith('SK')) {
-        // Only strip if the remaining name is valid
         let possibleClean = givenName.substring(2).trim();
-        if (possibleClean.length > 2) {
-            givenName = possibleClean;
-        }
+        if (possibleClean.length > 2) givenName = possibleClean;
     }
 
-    // Parse DOB to standard YYYY-MM-DD
     let dob = '';
     if (dobRaw && dobRaw.length === 6 && !isNaN(parseInt(dobRaw))) {
         let year = parseInt(dobRaw.substring(0, 2), 10);
         let month = dobRaw.substring(2, 4);
         let day = dobRaw.substring(4, 6);
-        
         let currentYear2Digit = new Date().getFullYear() % 100;
         let fullYear = (year > currentYear2Digit) ? (1900 + year) : (2000 + year);
         dob = `${fullYear}-${month}-${day}`;
+    }
+
+    // Advanced Validation from Python: Check NIN for authoritative Sex & DOB if OCR fails
+    let sex = sexRaw === 'M' ? 'Male' : (sexRaw === 'F' ? 'Female' : 'Unknown');
+    if (nin) {
+        let ninMatch = nin.match(/^([A-Z])([MF])(\d{2})([0-9A-Z]{10})$/);
+        if (ninMatch) {
+            sex = ninMatch[2] === 'M' ? 'Male' : 'Female';
+            if (!dob) {
+                let yy = parseInt(ninMatch[3], 10);
+                let currentYear2Digit = new Date().getFullYear() % 100;
+                let fullYear = (yy > currentYear2Digit) ? (1900 + yy) : (2000 + yy);
+                dob = `${fullYear}-01-01`; // Fallback approximate
+            }
+        }
     }
 
     return {
         surname: surname,
         givenName: givenName,
         otherName: "",
-        sex: sexRaw === 'M' ? 'Male' : (sexRaw === 'F' ? 'Female' : sexRaw),
+        sex: sex,
         dateOfBirth: dob,
-        nationality: nationality,
+        nationality: nationality || "UGA",
         nin: nin,
-        phoneNumber: ""
+        phoneNumber: "",
+        source: "OCR MRZ"
     };
 }

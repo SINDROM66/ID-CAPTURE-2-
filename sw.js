@@ -1,4 +1,4 @@
-const CACHE_NAME = 'nssf-capture-v3';
+const CACHE_NAME = 'nssf-capture-v5';
 const ASSETS = [
   './',
   './index.html',
@@ -8,7 +8,8 @@ const ASSETS = [
   './js/scanner.js',
   './js/ug-id-parser.js',
   './manifest.json',
-  'https://unpkg.com/@zxing/library@0.20.0/umd/index.min.js',
+  './BigInteger.min.js',
+  './zxing-pdf417.js',
   'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap'
 ];
 
