@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <script src="BigInteger.min.js"></script>
+    <script src="zxing-pdf417.js"></script>
+</head>
+<body>
+    <img id="img_new" src="new_id_back.jpg" style="display:none;">
+    <img id="img_old" src="old_id_back.jpg" style="display:none;">
+
+    <script>
+        async function runTests() {
+            const results = {};
+
+            function decodeCanvas(canvas_context, width, height) {
+                try {
+                    const imageData = canvas_context.getImageData(0, 0, width, height);
+                    const source = new ZXing.BitmapLuminanceSource(imageData);
+                    const binarizer = new ZXing.Common.HybridBinarizer(source);
+                    const bitmap = new ZXing.BinaryBitmap(binarizer);
+                    const result = ZXing.PDF417.PDF417Reader.decode(bitmap, null, false);
+                    return { success: true, text: result ? result.text || result.Text || JSON.stringify(result) : null, raw: result };
+                } catch (e) {
+                    return { success: false, error: e.message || e.toString() };
+                }
+            }
+
+            // Wait for images to load
+            await new Promise(r => setTimeout(r, 1000));
+
+            const imgNew = document.getElementById('img_new');
+            const imgOld = document.getElementById('img_old');
+
+            // 1. new_id_back.jpg (full)
+            {
+                const canvas = document.createElement('canvas');
+                canvas.width = imgNew.naturalWidth;
+                canvas.height = imgNew.naturalHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(imgNew, 0, 0);
+                results['new_full'] = decodeCanvas(ctx, canvas.width, canvas.height);
+            }
+
+            // 2. new_id_back.jpg (cropped 211, 1465, 2169, 2250)
+            {
+                const sx = 211, sy = 1465;
+                const sw = 2169 - 211;
+                const sh = 2250 - 1465;
+                const canvas = document.createElement('canvas');
+                canvas.width = sw;
+                canvas.height = sh;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(imgNew, sx, sy, sw, sh, 0, 0, sw, sh);
+                results['new_cropped'] = decodeCanvas(ctx, sw, sh);
+            }
+
+            // 3. old_id_back.jpg (full)
+            {
+                const canvas = document.createElement('canvas');
+                canvas.width = imgOld.naturalWidth;
+                canvas.height = imgOld.naturalHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(imgOld, 0, 0);
+                results['old_full'] = decodeCanvas(ctx, canvas.width, canvas.height);
+            }
+
+            // POST results
+            fetch('/submit', {
+                method: 'POST',
+                body: JSON.stringify(results)
+            }).catch(e => console.error(e));
+        }
+
+        window.onerror = function(msg, url, lineNo, columnNo, error) {
+            fetch('/submit', {
+                method: 'POST',
+                body: JSON.stringify({ error: msg, line: lineNo })
+            });
+        };
+
+        window.onload = runTests;
+    </script>
+</body>
+</html>

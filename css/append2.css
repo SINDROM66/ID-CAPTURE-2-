@@ -1,0 +1,105 @@
+
+/* --- NEW LAYOUT & MODAL STYLES --- */
+.content-wrapper {
+    max-width: 600px;
+    margin: 0 auto;
+}
+
+.image-preview-container {
+    border: 2px solid #198754;
+    border-radius: 8px;
+    padding: 1rem;
+    background: #f8fff9;
+    margin-top: 1.5rem;
+}
+.image-preview-box {
+    display: flex;
+    justify-content: center;
+    background: transparent;
+    border-radius: 4px;
+}
+.image-preview-box img {
+    max-height: 250px;
+    max-width: 100%;
+    object-fit: contain;
+}
+.success-text {
+    color: #198754;
+    font-size: 0.9rem;
+    margin-top: 0.5rem;
+}
+.text-center {
+    text-align: center;
+}
+
+.modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 48, 87, 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    backdrop-filter: blur(4px);
+}
+.modal.hidden {
+    display: none;
+}
+.modal-content {
+    background: white;
+    width: 90%;
+    max-width: 400px;
+    border-radius: 12px;
+    padding: 1.5rem;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+}
+.modal-subtitle {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    margin-bottom: 1.5rem;
+    margin-top: 0.5rem;
+}
+.modal-option {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    width: 100%;
+    padding: 1rem;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    cursor: pointer;
+    transition: var(--transition);
+    text-align: left;
+}
+.modal-option:hover {
+    border-color: var(--primary);
+    background: #f0f7fc;
+}
+.modal-option-icon {
+    color: var(--primary);
+    background: #e1eff8;
+    padding: 0.75rem;
+    border-radius: 8px;
+    display: flex;
+}
+.modal-option-text {
+    display: flex;
+    flex-direction: column;
+}
+.modal-option-text strong {
+    color: var(--text-main);
+    font-size: 1rem;
+}
+.modal-option-text span {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    margin-top: 0.25rem;
+}
+.hidden-input {
+    display: none;
+}

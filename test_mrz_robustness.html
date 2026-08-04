@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>OCR Robustness Test</title>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+</head>
+<body>
+    <h1>Testing OCR Robustness</h1>
+    <div id="status">Running tests...</div>
+    <img id="img_new" src="new_id_back.jpg" crossorigin="anonymous" style="display:none;">
+    <img id="img_old" src="old_id_back.jpg" crossorigin="anonymous" style="display:none;">
+
+    <script>
+        async function runTests() {
+            const results = [];
+            const worker = await Tesseract.createWorker('eng');
+            
+            // Set some parameters to improve MRZ reading
+            await worker.setParameters({
+                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789< '
+            });
+
+            const images = ['img_new', 'img_old'];
+            
+            for (let i = 0; i < 7; i++) {
+                for (const imgId of images) {
+                    const img = document.getElementById(imgId);
+                    try {
+                        const { data: { text } } = await worker.recognize(img);
+                        results.push({
+                            run: i + 1,
+                            image: imgId,
+                            text: text
+                        });
+                    } catch (e) {
+                        results.push({
+                            run: i + 1,
+                            image: imgId,
+                            error: e.message
+                        });
+                    }
+                }
+            }
+            
+            await worker.terminate();
+            
+            await fetch('/submit', {
+                method: 'POST',
+                body: JSON.stringify(results, null, 2)
+            });
+            
+            document.getElementById('status').innerText = 'Tests completed! Check python server log.';
+        }
+
+        window.onload = runTests;
+    </script>
+</body>
+</html>

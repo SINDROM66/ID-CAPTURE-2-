@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>OCR Test</title>
+    <!-- Load Tesseract.js -->
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <style>
+        body { font-family: sans-serif; }
+        .result { margin-top: 20px; white-space: pre-wrap; background: #eee; padding: 10px; }
+        img { max-width: 400px; border: 1px solid #ccc; }
+    </style>
+</head>
+<body>
+    <h1>Tesseract.js OCR Test</h1>
+    
+    <div>
+        <h3>New ID Back</h3>
+        <img id="img_new" src="new_id_back.jpg" crossorigin="anonymous">
+        <div id="res_new" class="result">Processing...</div>
+    </div>
+
+    <div>
+        <h3>Old ID Back</h3>
+        <img id="img_old" src="old_id_back.jpg" crossorigin="anonymous">
+        <div id="res_old" class="result">Processing...</div>
+    </div>
+
+    <script>
+        async function runOCR(imgId, resId) {
+            const img = document.getElementById(imgId);
+            const resDiv = document.getElementById(resId);
+            
+            try {
+                // Initialize worker
+                const worker = await Tesseract.createWorker('eng');
+                
+                // Recognize text
+                const { data: { text } } = await worker.recognize(img);
+                
+                resDiv.innerText = text;
+                console.log(`--- ${imgId} ---`);
+                console.log(text);
+                
+                await worker.terminate();
+                
+                // Post results to python server for logging
+                fetch('/submit', {
+                    method: 'POST',
+                    body: JSON.stringify({ id: imgId, text: text })
+                }).catch(e => console.error(e));
+                
+            } catch (error) {
+                resDiv.innerText = "Error: " + error.message;
+                fetch('/submit', {
+                    method: 'POST',
+                    body: JSON.stringify({ id: imgId, error: error.message })
+                });
+            }
+        }
+
+        window.onload = async () => {
+            await runOCR('img_new', 'res_new');
+            await runOCR('img_old', 'res_old');
+            
+            fetch('/submit', {
+                method: 'POST',
+                body: JSON.stringify({ done: true })
+            });
+        };
+    </script>
+</body>
+</html>

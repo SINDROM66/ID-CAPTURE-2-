@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>NSSF Member Data Capture</title>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <!-- Security Lock Screen (Kept simple) -->
+    <div id="lock-screen" class="active">
+        <div class="card" style="margin: 2rem;">
+            <h2 class="card-title">Secure Access</h2>
+            <div class="form-group" style="margin-top: 1rem;">
+                <input type="password" id="pin-input" placeholder="PIN" autocomplete="off">
+            </div>
+            <button id="unlock-btn" class="btn btn-primary" style="margin-top: 1rem; width: 100%;">Unlock</button>
+            <p id="lock-error" class="hidden" style="color: var(--danger); font-size: 12px; margin-top: 0.5rem;">Invalid PIN.</p>
+        </div>
+    </div>
+
+    <!-- Main App Container -->
+    <div id="main-app" class="app app-blurred">
+        
+        <!-- Header -->
+        <header class="hdr">
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <div class="hdr-logo">NSSF</div>
+                <div class="hdr-txt">
+                    <div style="font-weight: 700; font-size: 14px;">Digital Pre-Registration</div>
+                    <div style="font-size: 11px; opacity: 0.85;">Member Data Capture Tool</div>
+                </div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <div id="network-status" class="offline status-badge">
+                    <span class="status-dot"></span>
+                    <span class="status-text">Offline</span>
+                </div>
+                <button id="install-btn" class="btn btn-outline" style="padding: 4px 12px; font-size: 11px; border-radius: 20px; color: white; border-color: rgba(255,255,255,0.4); background: transparent;">Install</button>
+            </div>
+        </header>
+
+        <!-- Navigation Tabs -->
+        <nav class="tabs">
+            <button class="tab-btn active" data-target="capture-tab">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
+                Capture
+            </button>
+            <button class="tab-btn" data-target="records-tab">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>
+                Records <span id="records-badge" style="background: var(--danger); color: white; padding: 2px 6px; border-radius: 10px; font-size: 10px; margin-left: 4px;">0</span>
+            </button>
+        </nav>
+
+        <main style="padding: 16px;">
+            <!-- Capture Tab -->
+            <section id="capture-tab" class="tab-content active">
+                
+                <!-- Mode Toggle Row -->
+                <div class="mode-toggle-row">
+                    <button id="nav-scan-btn" class="mode-btn active">Scan Barcode</button>
+                    <button id="nav-manual-btn" class="mode-btn">Enter Data Manually</button>
+                </div>
+
+                <!-- Scan Barcode View -->
+                <div id="card-barcode-upload" class="card">
+                    <div class="card-title">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5v14M7 5v14M11 5v14M15 5v14M19 5v14M23 5v14"></path></svg>
+                        Scan Barcode
+                    </div>
+                    
+                    <div id="upload-zone" class="uzone" style="margin-top: 12px; margin-bottom: 12px; cursor: pointer;">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="2" style="margin-bottom: 8px;"><rect x="3" y="4" width="18" height="16" rx="2" ry="2"></rect><line x1="7" y1="8" x2="11" y2="8"></line><line x1="7" y1="12" x2="17" y2="12"></line><line x1="7" y1="16" x2="17" y2="16"></line></svg>
+                        <div style="font-weight: 700; color: var(--primary);">Back of ID</div>
+                        <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Barcode scan — direct read</div>
+                    </div>
+                    
+                    <button id="trigger-upload" class="btn btn-outline" style="width: 100%; margin-bottom: 12px;">Choose / Take Photo</button>
+                    
+                    <div id="image-preview-container" class="hidden" style="margin-bottom: 12px; border: 1px solid var(--border); padding: 8px; border-radius: var(--radius); text-align: center;">
+                        <img id="image-preview" src="" style="max-width: 100%; max-height: 200px;">
+                    </div>
+
+                    <div class="hint" style="margin-bottom: 16px;">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink: 0;"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+                        <div>Photographs the barcode on the back of the card and decodes it directly. Ensure the text is clear.</div>
+                    </div>
+
+                    <div class="action-row">
+                        <button id="extract-btn" class="btn btn-primary" style="flex: 1;" disabled>Extract Data</button>
+                        <button id="reset-upload-btn" class="btn btn-ghost" style="flex: 1;">Reset</button>
+                    </div>
+                    <p id="scanner-error" class="hidden" style="color: var(--danger); font-size: 12px; margin-top: 12px;"></p>
+                    
+                    <!-- Temporary Dev Console for testing OCR -->
+                    <div id="dev-console-wrapper" style="margin-top: 16px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+                        <div style="background: var(--bg); font-size: 10px; font-weight: 700; color: var(--text-muted); padding: 4px 8px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between;">
+                            <span>DEBUG CONSOLE</span>
+                            <span id="clear-console-btn" style="cursor: pointer; color: var(--primary);">Clear</span>
+                        </div>
+                        <div id="dev-console" style="background: #1e1e1e; color: #00ff00; font-family: monospace; font-size: 10px; padding: 8px; max-height: 200px; overflow-y: auto; text-align: left; white-space: pre-wrap;"></div>
+                    </div>
+                </div>
+
+                <!-- Progress View -->
+                <div id="card-progress" class="card hidden">
+                    <div class="card-title">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                        Running OCR — Please Wait
+                    </div>
+                    <div style="text-align: center; padding: 30px 20px 20px;">
+                        <div class="spinner"></div>
+                    </div>
+                    <div style="color: var(--primary); font-weight: 600;" id="progress-text">Reading back of ID card (MRZ)...</div>
+                    <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Running Tesseract worker</div>
+                </div>
+
+                <!-- Manual Entry Form View -->
+                <div id="card-form" class="card hidden">
+                    <div class="card-title">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                        Review Details
+                    </div>
+                    <form id="record-form" style="margin-top: 16px;">
+                        <div class="form-section-label">Personal Details</div>
+                        <div class="form-group">
+                            <label for="surname">SURNAME</label>
+                            <input type="text" id="surname" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="givenName">GIVEN NAME(S)</label>
+                            <input type="text" id="givenName" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="otherName">OTHER NAME</label>
+                            <input type="text" id="otherName">
+                        </div>
+                        
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                            <div class="form-group">
+                                <label for="sex">SEX</label>
+                                <select id="sex" required>
+                                    <option value="">— Select —</option>
+                                    <option value="Male">Male</option>
+                                    <option value="Female">Female</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="dob">DOB</label>
+                                <input type="text" id="dob" placeholder="YYYY-MM-DD" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="nationality">NATIONALITY</label>
+                                <input type="text" id="nationality" value="UGA" required>
+                            </div>
+                        </div>
+
+                        <div class="form-section-label" style="margin-top: 16px;">Identity & Contact</div>
+                        <div class="form-group">
+                            <label for="nin">NIN</label>
+                            <input type="text" id="nin" class="mono" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="phone">PHONE NUMBER</label>
+                            <input type="tel" id="phone" required>
+                        </div>
+
+                        <div class="action-row" style="margin-top: 24px;">
+                            <button type="submit" id="save-btn" class="btn btn-success" style="flex: 1;">Save Record</button>
+                            <button type="button" id="discard-btn" class="btn btn-ghost" style="flex: 1;">Discard</button>
+                        </div>
+                    </form>
+                </div>
+            </section>
+
+            <!-- Records Tab -->
+            <section id="records-tab" class="tab-content hidden">
+                <div class="card" style="padding: 12px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                        <div style="font-size: 13px; font-weight: 600; color: var(--primary);">Data Export</div>
+                        <div style="display: flex; gap: 8px;">
+                            <button id="export-btn" class="btn btn-primary" style="padding: 6px 10px; font-size: 12px;">Export</button>
+                            <button id="clear-all-btn" class="btn btn-danger" style="padding: 6px 10px; font-size: 12px;">Clear</button>
+                        </div>
+                    </div>
+                    
+                    <div class="table-scroll">
+                        <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                            <thead>
+                                <tr>
+                                    <th style="text-align: left; padding: 8px; background: var(--bg); color: var(--primary); border-bottom: 2px solid var(--border);">Name & NIN</th>
+                                </tr>
+                            </thead>
+                            <tbody id="records-list">
+                                <!-- Records JS injects here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Photo Modal -->
+    <div id="photo-modal" class="hidden" style="position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px;">
+        <div class="card" style="width: 100%; max-width: 320px;">
+            <div class="card-title" style="margin-bottom: 16px;">Select Photo Source</div>
+            <button id="btn-camera" class="btn btn-primary" style="width: 100%; margin-bottom: 8px;">Take Photo (Camera)</button>
+            <button id="btn-gallery" class="btn btn-outline" style="width: 100%; margin-bottom: 16px;">Choose from Gallery</button>
+            <button id="btn-cancel-modal" class="btn btn-ghost" style="width: 100%;">Cancel</button>
+            
+            <input type="file" id="input-camera" accept="image/*" capture="environment" style="display: none;">
+            <input type="file" id="input-gallery" accept="image/*" style="display: none;">
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <script src="js/ug-id-parser.js"></script>
+    <script src="js/db.js"></script>
+    <script src="js/scanner.js"></script>
+    <script src="js/app.js"></script>
+
+    <!-- Dev Console Override Script -->
+    <script>
+        (function() {
+            var oldLog = console.log;
+            var oldError = console.error;
+            var oldWarn = console.warn;
+            var consoleEl = document.getElementById('dev-console');
+            
+            function printLog(msg, color) {
+                if(!consoleEl) return;
+                var div = document.createElement('div');
+                div.style.color = color;
+                div.style.borderBottom = '1px solid #333';
+                div.style.paddingBottom = '2px';
+                div.style.marginBottom = '2px';
+                div.style.wordBreak = 'break-all';
+                
+                if (typeof msg === 'object') {
+                    try { msg = JSON.stringify(msg, null, 2); } catch(e) { msg = String(msg); }
+                }
+                div.textContent = msg;
+                consoleEl.appendChild(div);
+                consoleEl.scrollTop = consoleEl.scrollHeight;
+            }
+
+            console.log = function() {
+                var args = Array.from(arguments);
+                printLog(args.join(' '), '#00ff00');
+                oldLog.apply(console, args);
+            };
+            console.error = function() {
+                var args = Array.from(arguments);
+                printLog(args.join(' '), '#ff4444');
+                oldError.apply(console, args);
+            };
+            console.warn = function() {
+                var args = Array.from(arguments);
+                printLog(args.join(' '), '#ffaa00');
+                oldWarn.apply(console, args);
+            };
+            
+            document.getElementById('clear-console-btn').addEventListener('click', function() {
+                consoleEl.innerHTML = '';
+            });
+            
+            window.addEventListener('error', function(e) {
+                console.error("Window Error: " + e.message + " at " + e.filename + ":" + e.lineno);
+            });
+        })();
+    </script>
+</body>
+</html>
