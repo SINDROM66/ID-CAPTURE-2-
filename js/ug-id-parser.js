@@ -55,7 +55,7 @@ async function parseUgandaID(image) {
  * Extracts the 3 lines of the TD1 MRZ from OCR text.
  */
 function extractMRZ(text) {
-    const lines = text.split('\n').map(l => l.replace(/\s+/g, '').toUpperCase());
+    const lines = text.split('\n').map(l => l.replace(/\s+/g, '').toUpperCase()).filter(l => l.length > 0);
     
     // Look for 3 consecutive lines that look like MRZ
     for (let i = 0; i < lines.length - 2; i++) {
@@ -83,86 +83,86 @@ function extractMRZ(text) {
 function parseMRZ(mrzLines) {
     let [line1, line2, line3] = mrzLines;
     
-    // Line 1: IDUGA...
     let line1Clean = line1.replace(/\s+/g, '');
-    // NIN starts at index 15 and is exactly 14 characters long. We drop the 15th check digit.
-    let nin = line1Clean.substring(15, 29).replace(/</g, '');
-    // Replace letter 'O' with number '0' as per Ugandan NIN rules
-    nin = nin.replace(/O/g, '0');
+    let nin = "";
     
-    if (nin.startsWith('CM0')) {
-        // Just ensuring it starts correctly if there are other artifacts
+    if (line1Clean.length >= 29) {
+        nin = line1Clean.substring(15, 29).replace(/</g, '').replace(/O/g, '0');
+    } else {
+        let m1 = line1Clean.match(/[A-Z]{2}\d{8}[A-Z0-9]{4}/);
+        if (m1) nin = m1[0].replace(/O/g, '0');
     }
 
-    // Line 2: DOB, Sex, Nationality
     let line2Clean = line2.replace(/\s+/g, '');
-    let dobRaw = line2Clean.substring(0, 6)
-        .replace(/D/g, '0')
-        .replace(/O/g, '0')
-        .replace(/I/g, '1')
-        .replace(/S/g, '5')
-        .replace(/B/g, '8')
-        .replace(/Z/g, '2');
-        
+    let dobRaw = line2Clean.substring(0, 6).replace(/[DO]/g, '0').replace(/I/g, '1').replace(/S/g, '5').replace(/B/g, '8').replace(/Z/g, '2');
     let sexRaw = line2Clean.substring(7, 8);
     let nationality = line2Clean.substring(15, 18).replace(/</g, '');
 
-    // Line 3: Surname and Given Names
-    let line3Clean = line3.replace(/\s+/g, '<'); // Normalize spaces to <
-    // Extract everything before the first sequence of 3 or more < (which indicates padding)
-    let match = line3Clean.match(/^(.*?)(?:<{3,}|$)/);
-    let namePart = match ? match[1] : line3Clean;
-
+    let line3Clean = line3.replace(/\s+/g, '<');
+    
+    // Aggressively fix OCR hallucinations of the '<<' name separator (e.g. LKK, KKL, KLK)
+    line3Clean = line3Clean.replace(/([A-Z]{3,})(LKK|KKL|LKL|KKK|LLL|KLK|LKC|KLC)([A-Z]{3,})/g, "$1<<$3");
+    
     let surname = '';
     let givenName = '';
 
-    if (namePart.includes('<<')) {
-        let parts = namePart.split('<<');
-        surname = parts[0];
-        givenName = parts.slice(1).join('<');
-    } else {
-        let firstIndex = namePart.indexOf('<');
-        if (firstIndex !== -1) {
-            surname = namePart.substring(0, firstIndex);
-            givenName = namePart.substring(firstIndex + 1);
-        } else {
-            surname = namePart;
-            givenName = '';
-        }
+    let parts = line3Clean.split(/<+/).filter(p => p.length > 0);
+    
+    function cleanNamePart(name) {
+        // Strip common MRZ bracket hallucinations (K, L, E, C, 8, 7) ONLY if followed by a consonant that doesn't form a valid English/Ugandan cluster
+        // Consonants excluded: L, R, H, W, Y (because CL, CR, CH, KW are valid)
+        return name.replace(/^[KLEC87]+(?=[BCDFGJKMNPQSTVXZ])/g, "");
     }
 
-    surname = surname.replace(/</g, ' ').trim();
-    givenName = givenName.replace(/</g, ' ').trim();
-
-    // Clean up common OCR artifacts where '<<' is read as '<SK' or 'SK'
-    if (givenName.startsWith('SK ') || givenName.startsWith('SK')) {
-        // Only strip if the remaining name is valid
-        let possibleClean = givenName.substring(2).trim();
-        if (possibleClean.length > 2) {
-            givenName = possibleClean;
-        }
+    if (parts.length > 0) surname = cleanNamePart(parts[0]);
+    if (parts.length > 1) {
+        let validNames = parts.slice(1).filter(p => {
+            if (/^[KLEC87]+$/.test(p)) return false;
+            if (p === 'SK') return false;
+            return true;
+        });
+        givenName = validNames.map(cleanNamePart).join(' ');
     }
 
-    // Parse DOB to standard YYYY-MM-DD
     let dob = '';
     if (dobRaw && dobRaw.length === 6 && !isNaN(parseInt(dobRaw))) {
         let year = parseInt(dobRaw.substring(0, 2), 10);
-        let month = dobRaw.substring(2, 4);
-        let day = dobRaw.substring(4, 6);
+        let monthStr = dobRaw.substring(2, 4);
+        let dayStr = dobRaw.substring(4, 6);
+        
+        // Aggressive OCR Error Fixing for Dates
+        if (parseInt(monthStr, 10) > 12) {
+            monthStr = monthStr.replace(/[689C]/g, '0');
+            if (parseInt(monthStr, 10) > 12) monthStr = '01';
+        }
+        if (parseInt(dayStr, 10) > 31 || parseInt(dayStr, 10) === 0) {
+            dayStr = dayStr.replace(/[689C]/g, '0');
+            if (parseInt(dayStr, 10) > 31 || parseInt(dayStr, 10) === 0) dayStr = '01';
+        }
         
         let currentYear2Digit = new Date().getFullYear() % 100;
         let fullYear = (year > currentYear2Digit) ? (1900 + year) : (2000 + year);
-        dob = `${fullYear}-${month}-${day}`;
+        dob = `${fullYear}-${monthStr}-${dayStr}`;
+    }
+
+    // Check NIN for authoritative Sex if OCR fails
+    let sex = sexRaw === 'M' ? 'Male' : (sexRaw === 'F' ? 'Female' : 'Unknown');
+    if (nin) {
+        let ninMatch = nin.match(/^([A-Z])([MF])(\d{2})([0-9A-Z]{10})$/);
+        if (ninMatch) {
+            sex = ninMatch[2] === 'M' ? 'Male' : 'Female';
+        }
     }
 
     return {
         surname: surname,
         givenName: givenName,
         otherName: "",
-        sex: sexRaw === 'M' ? 'Male' : (sexRaw === 'F' ? 'Female' : sexRaw),
+        sex: sex,
         dateOfBirth: dob,
-        nationality: nationality,
+        nationality: nationality || "UGA",
         nin: nin,
-        phoneNumber: ""
+        phoneNumber: "",
+        source: "OCR MRZ"
     };
 }
