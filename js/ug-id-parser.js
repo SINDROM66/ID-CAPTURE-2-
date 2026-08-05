@@ -226,11 +226,22 @@ function parseMRZ(mrzLines) {
     let dob = '';
     if (dobRaw && dobRaw.length === 6 && !isNaN(parseInt(dobRaw))) {
         let year = parseInt(dobRaw.substring(0, 2), 10);
-        let month = dobRaw.substring(2, 4);
-        let day = dobRaw.substring(4, 6);
+        let monthStr = dobRaw.substring(2, 4);
+        let dayStr = dobRaw.substring(4, 6);
+        
+        // Aggressive OCR Error Fixing for Dates
+        if (parseInt(monthStr, 10) > 12) {
+            monthStr = monthStr.replace(/[689C]/g, '0');
+            if (parseInt(monthStr, 10) > 12) monthStr = '01';
+        }
+        if (parseInt(dayStr, 10) > 31 || parseInt(dayStr, 10) === 0) {
+            dayStr = dayStr.replace(/[689C]/g, '0');
+            if (parseInt(dayStr, 10) > 31 || parseInt(dayStr, 10) === 0) dayStr = '01';
+        }
+        
         let currentYear2Digit = new Date().getFullYear() % 100;
         let fullYear = (year > currentYear2Digit) ? (1900 + year) : (2000 + year);
-        dob = `${fullYear}-${month}-${day}`;
+        dob = `${fullYear}-${monthStr}-${dayStr}`;
     }
 
     // Advanced Validation from Python: Check NIN for authoritative Sex & DOB if OCR fails
