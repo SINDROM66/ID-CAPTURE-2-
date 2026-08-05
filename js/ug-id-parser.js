@@ -128,6 +128,8 @@ async function parseUgandaID(image) {
         // We will try up to 2 passes on the base image (psm 3, psm 6)
         console.log("Starting OCR Pass 1 (psm: 3)...");
         let { data: { text } } = await worker.recognize(image);
+        console.log("========== RAW OCR TEXT (PASS 1) ==========\n" + text + "\n===========================================");
+        
         let mrzData = extractMRZ(text);
 
         if (!mrzData) {
@@ -135,6 +137,7 @@ async function parseUgandaID(image) {
             await worker.setParameters({ tessedit_pageseg_mode: '6' });
             let result2 = await worker.recognize(image);
             text = result2.data.text;
+            console.log("========== RAW OCR TEXT (PASS 2) ==========\n" + text + "\n===========================================");
             mrzData = extractMRZ(text);
         }
 
