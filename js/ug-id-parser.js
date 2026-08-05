@@ -205,6 +205,12 @@ function parseMRZ(mrzLines) {
     let nationality = line2Clean.substring(15, 18).replace(/</g, '');
 
     let line3Clean = line3;
+    
+    // Aggressively fix OCR hallucinations of the '<<' name separator (e.g. LKK, KKL)
+    if (!line3Clean.includes('<<')) {
+        line3Clean = line3Clean.replace(/([A-Z]{3,})(LKK|KKL|LKL|KKK|LLL)([A-Z]{3,})/g, "$1<<$3");
+    }
+    
     let surname = '';
     let givenName = '';
 
