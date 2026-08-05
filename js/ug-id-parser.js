@@ -155,20 +155,24 @@ async function parseUgandaID(image) {
  * Extracts the 3 lines of the TD1 MRZ from OCR text.
  */
 function extractMRZ(text) {
-    const lines = text.split('\n').map(l => l.replace(/\s+/g, '').toUpperCase());
+    const lines = text.split('\n').map(l => l.toUpperCase().trim());
     
     for (let i = 0; i < lines.length - 2; i++) {
-        const l1 = lines[i];
-        const l2 = lines[i+1];
-        const l3 = lines[i+2];
+        const l1 = lines[i].replace(/\s+/g, '');
+        const l2 = lines[i+1].replace(/\s+/g, '');
+        const l3 = lines[i+2].replace(/\s+/g, '');
 
-        // Length relaxed to 25 to tolerate edge cutoffs
         if (l1.length >= 25 && l2.length >= 25 && l3.length >= 25) {
             const hasUGA = l1.includes('UGA') || l2.includes('UGA');
-            const hasBrackets = (l1.split('<').length > 2) || (l2.split('<').length > 2) || (l3.split('<').length > 2);
+            // Allow spaces as a valid indicator of brackets
+            const hasBrackets = (l1.split('<').length > 2) || (l2.split('<').length > 2) || lines[i+2].includes(' ');
             
-            if (hasUGA && hasBrackets) {
-                return [l1, l2, l3];
+            if (hasUGA && (hasBrackets || l3.length >= 25)) {
+                return [
+                    lines[i].replace(/\s+/g, '<'), 
+                    lines[i+1].replace(/\s+/g, '<'), 
+                    lines[i+2].replace(/\s+/g, '<')
+                ];
             }
         }
     }
@@ -197,32 +201,23 @@ function parseMRZ(mrzLines) {
     let sexRaw = line2Clean.substring(7, 8);
     let nationality = line2Clean.substring(15, 18).replace(/</g, '');
 
-    let line3Clean = line3.replace(/\s+/g, '<');
-    let match = line3Clean.match(/^(.*?)(?:<{3,}|$)/);
-    let namePart = match ? match[1] : line3Clean;
-
+    let line3Clean = line3;
     let surname = '';
     let givenName = '';
 
-    if (namePart.includes('<<')) {
-        let parts = namePart.split('<<');
-        surname = parts[0];
-        givenName = parts.slice(1).join('<');
-    } else {
-        let firstIndex = namePart.indexOf('<');
-        if (firstIndex !== -1) {
-            surname = namePart.substring(0, firstIndex);
-            givenName = namePart.substring(firstIndex + 1);
-        } else {
-            surname = namePart;
-        }
-    }
-
-    surname = surname.replace(/</g, ' ').trim();
-    givenName = givenName.replace(/</g, ' ').trim();
-    if (givenName.startsWith('SK ') || givenName.startsWith('SK')) {
-        let possibleClean = givenName.substring(2).trim();
-        if (possibleClean.length > 2) givenName = possibleClean;
+    // Split by any sequence of <
+    let parts = line3Clean.split(/<+/).filter(p => p.length > 0);
+    
+    if (parts.length > 0) surname = parts[0];
+    if (parts.length > 1) {
+        // filter out garbage OCR reads of <<< like LKK, KK, 88
+        let validNames = parts.slice(1).filter(p => {
+            // If the part is just K's, L's, E's, C's or 8's, it's probably OCR garbage for <<<
+            if (/^[KLEC8]+$/.test(p)) return false;
+            if (p === 'SK') return false; // Common artifact
+            return true;
+        });
+        givenName = validNames.join(' ');
     }
 
     let dob = '';

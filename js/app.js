@@ -37,13 +37,24 @@ function setupAuth() {
     const unlockBtn = document.getElementById('unlock-btn');
     const lockError = document.getElementById('lock-error');
 
+    function unlockApp() {
+        lockScreen.style.opacity = '0';
+        setTimeout(() => {
+            lockScreen.classList.add('hidden');
+            mainApp.classList.remove('app-blurred');
+        }, 400);
+    }
+
+    if (localStorage.getItem('nssf_unlocked') === 'true') {
+        lockScreen.style.display = 'none';
+        mainApp.classList.remove('app-blurred');
+        return;
+    }
+
     function attemptUnlock() {
         if (pinInput.value.trim().toUpperCase() === PIN.toUpperCase()) {
-            lockScreen.style.opacity = '0';
-            setTimeout(() => {
-                lockScreen.classList.add('hidden');
-                mainApp.classList.remove('app-blurred');
-            }, 400);
+            localStorage.setItem('nssf_unlocked', 'true');
+            unlockApp();
         } else {
             lockError.classList.remove('hidden');
             pinInput.value = '';

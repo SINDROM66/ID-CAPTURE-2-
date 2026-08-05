@@ -92,14 +92,6 @@
                     </div>
                     <p id="scanner-error" class="hidden" style="color: var(--danger); font-size: 12px; margin-top: 12px;"></p>
                     
-                    <!-- Temporary Dev Console for testing OCR -->
-                    <div id="dev-console-wrapper" style="margin-top: 16px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
-                        <div style="background: var(--bg); font-size: 10px; font-weight: 700; color: var(--text-muted); padding: 4px 8px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between;">
-                            <span>DEBUG CONSOLE</span>
-                            <span id="clear-console-btn" style="cursor: pointer; color: var(--primary);">Clear</span>
-                        </div>
-                        <div id="dev-console" style="background: #1e1e1e; color: #00ff00; font-family: monospace; font-size: 10px; padding: 8px; max-height: 200px; overflow-y: auto; text-align: left; white-space: pre-wrap;"></div>
-                    </div>
                 </div>
 
                 <!-- Progress View -->
@@ -199,6 +191,15 @@
                 </div>
             </section>
         </main>
+
+        <!-- Temporary Dev Console for testing OCR (Globally Visible) -->
+        <div id="dev-console-wrapper" style="margin: 0 16px 16px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+            <div style="background: var(--bg); font-size: 10px; font-weight: 700; color: var(--text-muted); padding: 4px 8px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between;">
+                <span>DEBUG CONSOLE</span>
+                <span id="clear-console-btn" style="cursor: pointer; color: var(--primary);">Clear</span>
+            </div>
+            <div id="dev-console" style="background: #1e1e1e; color: #00ff00; font-family: monospace; font-size: 10px; padding: 8px; max-height: 200px; overflow-y: auto; text-align: left; white-space: pre-wrap;"></div>
+        </div>
     </div>
 
     <!-- Photo Modal -->
