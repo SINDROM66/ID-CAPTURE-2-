@@ -78,6 +78,27 @@ function extractMRZ(text) {
 }
 
 /**
+ * Calculates the ICAO 7-3-1 check digit for a given string.
+ */
+function calculateICAOChecksum(str) {
+    const weights = [7, 3, 1];
+    let sum = 0;
+    for (let i = 0; i < str.length; i++) {
+        const char = str[i];
+        let val = 0;
+        if (char >= '0' && char <= '9') {
+            val = parseInt(char, 10);
+        } else if (char >= 'A' && char <= 'Z') {
+            val = char.charCodeAt(0) - 55; // 'A' is 65, 65-55 = 10
+        } else if (char === '<') {
+            val = 0;
+        }
+        sum += val * weights[i % 3];
+    }
+    return sum % 10;
+}
+
+/**
  * Parses the extracted TD1 MRZ lines into standard fields.
  */
 function parseMRZ(mrzLines) {
@@ -93,7 +114,25 @@ function parseMRZ(mrzLines) {
         if (m1) nin = m1[0].replace(/O/g, '0');
     }
 
-    let line2Clean = line2.replace(/\s+/g, '');
+    let line2Clean = line2.replace(/\s+/g, '').replace(/[O]/g, '0').replace(/I/g, '1');
+    
+    // ICAO Validation
+    if (line1Clean.length >= 30 && line2Clean.length >= 30) {
+        // Document Number
+        let docNum = line1Clean.substring(5, 14);
+        let docNumCheck = parseInt(line1Clean.substring(14, 15), 10);
+        if (!isNaN(docNumCheck) && calculateICAOChecksum(docNum) !== docNumCheck) {
+            console.warn("Document Number checksum failed, but proceeding with regex fallback.");
+        }
+
+        // DOB
+        let dobStr = line2Clean.substring(0, 6);
+        let dobCheck = parseInt(line2Clean.substring(6, 7), 10);
+        if (!isNaN(dobCheck) && calculateICAOChecksum(dobStr) !== dobCheck) {
+            throw new CardParseError("Date of Birth checksum failed. OCR misread the date.");
+        }
+    }
+
     let dobRaw = line2Clean.substring(0, 6).replace(/[DO]/g, '0').replace(/I/g, '1').replace(/S/g, '5').replace(/B/g, '8').replace(/Z/g, '2');
     let sexRaw = line2Clean.substring(7, 8);
     let nationality = line2Clean.substring(15, 18).replace(/</g, '');
@@ -101,7 +140,7 @@ function parseMRZ(mrzLines) {
     let line3Clean = line3.replace(/\s+/g, '<');
     
     // Aggressively fix OCR hallucinations of the '<<' name separator (e.g. LKK, KKL, KLK)
-    line3Clean = line3Clean.replace(/([A-Z]{3,})(LKK|KKL|LKL|KKK|LLL|KLK|LKC|KLC)([A-Z]{3,})/g, "$1<<$3");
+    line3Clean = line3Clean.replace(/([A-Z]{3,})(LKK|KKL|LKL|KKK|LLL|KLK|LKC|KLC|L<|K<|<L|<K)([A-Z]{3,})/g, "$1<<$3");
     
     let surname = '';
     let givenName = '';
@@ -110,7 +149,6 @@ function parseMRZ(mrzLines) {
     
     function cleanNamePart(name) {
         // Strip common MRZ bracket hallucinations (K, L, E, C, 8, 7) ONLY if followed by a consonant that doesn't form a valid English/Ugandan cluster
-        // Consonants excluded: L, R, H, W, Y (because CL, CR, CH, KW are valid)
         return name.replace(/^[KLEC87]+(?=[BCDFGJKMNPQSTVXZ])/g, "");
     }
 
@@ -129,16 +167,6 @@ function parseMRZ(mrzLines) {
         let year = parseInt(dobRaw.substring(0, 2), 10);
         let monthStr = dobRaw.substring(2, 4);
         let dayStr = dobRaw.substring(4, 6);
-        
-        // Aggressive OCR Error Fixing for Dates
-        if (parseInt(monthStr, 10) > 12) {
-            monthStr = monthStr.replace(/[689C]/g, '0');
-            if (parseInt(monthStr, 10) > 12) monthStr = '01';
-        }
-        if (parseInt(dayStr, 10) > 31 || parseInt(dayStr, 10) === 0) {
-            dayStr = dayStr.replace(/[689C]/g, '0');
-            if (parseInt(dayStr, 10) > 31 || parseInt(dayStr, 10) === 0) dayStr = '01';
-        }
         
         let currentYear2Digit = new Date().getFullYear() % 100;
         let fullYear = (year > currentYear2Digit) ? (1900 + year) : (2000 + year);

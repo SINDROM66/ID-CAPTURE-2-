@@ -1,0 +1,10 @@
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
+python-multipart>=0.0.6
+opencv-python>=4.7.0
+pillow>=9.5.0
+numpy>=1.24.0
+zxing-cpp>=2.0.0
+pdf417decoder>=1.0.0
+easyocr>=1.7.0
+pytesseract>=0.3.10
