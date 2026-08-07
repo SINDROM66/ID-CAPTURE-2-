@@ -140,14 +140,154 @@ const OCR_SUBSTITUTIONS = {
     'K': '<', 'C': '<', 'A': '4'
 };
 
+const NIN_OCR_PAIRS = {
+    '6': 'G', '8': 'B', '0': 'O', '1': 'I', '5': 'S', '2': 'Z',
+    'G': '6', 'B': '8', 'O': '0', 'I': '1', 'S': '5', 'Z': '2'
+};
+
+function parseMRZDate(dateStr, type = 'dob') {
+    if (!dateStr || dateStr.length !== 6) return null;
+    
+    const yy = parseInt(dateStr.substring(0, 2), 10);
+    const mm = parseInt(dateStr.substring(2, 4), 10);
+    const dd = parseInt(dateStr.substring(4, 6), 10);
+    
+    if (isNaN(yy) || isNaN(mm) || isNaN(dd)) return null;
+    
+    let fullYear;
+    if (type === 'dob') {
+        fullYear = 2000 + yy;
+        const currentYear = new Date().getFullYear();
+        if (fullYear > currentYear) {
+            fullYear = 1900 + yy;
+        }
+    } else {
+        const currentYear = new Date().getFullYear();
+        const currentYY = currentYear % 100;
+        fullYear = (yy > currentYY + 50) ? 1900 + yy : 2000 + yy;
+    }
+    
+    if (mm < 1 || mm > 12) return null;
+    const daysInMonth = new Date(fullYear, mm, 0).getDate();
+    if (dd < 1 || dd > daysInMonth) return null;
+    
+    const parsed = new Date(fullYear, mm - 1, dd);
+    if (type === 'dob' && parsed > new Date()) return null;
+    
+    return `${fullYear}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
+}
+
+function correctNIN(ninRaw) {
+    if (!ninRaw) return null;
+    let nin = ninRaw.toUpperCase().replace(/<+$/g, '').trim();
+    if (nin.length !== 14) return nin; // Return raw if length is already bad, but allow it to pass through
+    
+    const chars = nin.split('');
+    
+    for (let i = 0; i < chars.length; i++) {
+        const c = chars[i];
+        
+        // Positions 0-1: MUST be letters (CM, CF). Force number→letter.
+        if (i < 2 && /[0-9]/.test(c) && NIN_OCR_PAIRS[c]) {
+            chars[i] = NIN_OCR_PAIRS[c];
+        }
+        // Positions 2+: Only substitute at the tail end where OCR is weakest,
+        // and ONLY number→letter
+        else if (i >= nin.length - 4 && /[0-9]/.test(c) && NIN_OCR_PAIRS[c]) {
+            chars[i] = NIN_OCR_PAIRS[c];
+        }
+    }
+    
+    return chars.join('');
+}
+
+function extractNIN(line1) {
+    if (!line1 || line1.length < 30) return null;
+    
+    // Find UGA in first 8 chars of line 1 ONLY
+    const line1Prefix = line1.substring(0, 8);
+    let ugaIndex = line1Prefix.indexOf('UGA');
+    
+    // Fuzzy match for common OCR errors
+    if (ugaIndex === -1) {
+        const fuzzyMatch = line1Prefix.match(/[VU]G[A4]/);
+        if (fuzzyMatch) {
+            ugaIndex = fuzzyMatch.index;
+            console.log(`[NIN] Fuzzy-matched UGA at index ${ugaIndex}: "${fuzzyMatch[0]}"`);
+        }
+    }
+    
+    if (ugaIndex === -1 || ugaIndex > 4) {
+        console.warn(`[NIN] No valid UGA anchor found in Line 1 prefix: "${line1Prefix}"`);
+        let fallbackNin = line1.substring(15, 29);
+        return correctNIN(fallbackNin) || fallbackNin;
+    }
+    
+    const ninStart = ugaIndex + 13; // 0-based: UGA start + 13 = start of NIN
+    if (line1.length < ninStart + 14) {
+        console.warn(`[NIN] Line 1 too short for NIN extraction`);
+        return null;
+    }
+    
+    let nin = line1.substring(ninStart, ninStart + 14);
+    console.log(`[NIN] Raw extracted: "${nin}" from Line 1[${ninStart}-${ninStart + 13}]`);
+    
+    nin = correctNIN(nin);
+    console.log(`[NIN] After correction: "${nin}"`);
+    
+    if (!nin || !/^[A-Z0-9]{14}$/.test(nin)) {
+        console.warn(`[NIN] Format validation failed: "${nin}"`);
+    }
+    
+    return nin;
+}
+
+function stripTrailingArtifacts(name) {
+    if (!name) return '';
+    // Strip only 4+ trailing consonants. Include Y as a vowel.
+    return name.replace(/[^AEIOUY]{4,}$/i, '');
+}
+
+function parseMRZName(line3) {
+    if (!line3 || line3.length < 20) {
+        return { surname: '', givenName: '', otherName: '' };
+    }
+    
+    // Replace ALL fillers with spaces, collapse multiples
+    const cleaned = line3
+        .replace(/</g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    
+    let parts = cleaned.split(' ').filter(p => p.length > 0);
+    
+    // Aggressive artifact filter: each part must contain a vowel AND be > 2 chars
+    const VOWELS = /[AEIOUY]/i;
+    parts = parts.filter(part => VOWELS.test(part) && part.length > 2);
+    
+    const rawGiven = parts.slice(1, 2).join(' ');
+    const rawOther = parts.slice(2).join(' ');
+    
+    return {
+        surname: stripTrailingArtifacts(parts[0] || ''),
+        givenName: stripTrailingArtifacts(rawGiven) || '',
+        otherName: stripTrailingArtifacts(rawOther) || ''
+    };
+}
+
 function parseMRZ(mrzLines) {
-    let [line1, line2, line3] = mrzLines;
+    const line1 = mrzLines[0];
+    const line2 = mrzLines[1];
+    const line3 = mrzLines[2];
+    
+    console.log(`[MRZ] Line 1: "${line1}"`);
+    console.log(`[MRZ] Line 2: "${line2}"`);
+    console.log(`[MRZ] Line 3: "${line3}"`);
     
     // Auto-correction function for checksums
     function correctField(fieldStr, expectedCheck, isNumeric = false) {
         if (calculateICAOChecksum(fieldStr) === expectedCheck) return fieldStr;
         
-        // 1. Single substitutions
         for (let i = 0; i < fieldStr.length; i++) {
             const char = fieldStr[i];
             if (OCR_SUBSTITUTIONS[char]) {
@@ -156,153 +296,37 @@ function parseMRZ(mrzLines) {
                 
                 let testStr = fieldStr.substring(0, i) + subChar + fieldStr.substring(i + 1);
                 if (calculateICAOChecksum(testStr) === expectedCheck) {
-                    console.log(`Auto-corrected OCR checksum (single): ${fieldStr} -> ${testStr}`);
+                    console.log(`Auto-corrected OCR checksum: ${fieldStr} -> ${testStr}`);
                     return testStr;
                 }
             }
         }
-        
-        // 2. Pairwise combinations
-        let attempts = 0;
-        for (let i = 0; i < fieldStr.length - 1; i++) {
-            for (let j = i + 1; j < fieldStr.length; j++) {
-                const char1 = fieldStr[i];
-                const char2 = fieldStr[j];
-                if (OCR_SUBSTITUTIONS[char1] && OCR_SUBSTITUTIONS[char2]) {
-                    const sub1 = OCR_SUBSTITUTIONS[char1];
-                    const sub2 = OCR_SUBSTITUTIONS[char2];
-                    if (isNumeric && (sub1 === '<' || sub2 === '<')) continue;
-                    
-                    let testStr = fieldStr.split('');
-                    testStr[i] = sub1;
-                    testStr[j] = sub2;
-                    testStr = testStr.join('');
-                    
-                    if (calculateICAOChecksum(testStr) === expectedCheck) {
-                        console.log(`Auto-corrected OCR checksum (pair): ${fieldStr} -> ${testStr}`);
-                        return testStr;
-                    }
-                    attempts++;
-                    if (attempts >= 3) break;
-                }
-            }
-            if (attempts >= 3) break;
-        }
-
-        console.warn(`Checksum unrecoverable for field: ${fieldStr} after testing substitutions.`);
         return fieldStr;
     }
 
-    // --- Document Number ---
+    // Document Number Checksum Correction
     let docNumRaw = line1.substring(5, 14);
     let docNumCheck = parseInt(line1.substring(14, 15), 10);
     if (!isNaN(docNumCheck)) {
         docNumRaw = correctField(docNumRaw, docNumCheck, true);
     }
     
-    // --- DOB ---
-    let dobRaw = line2.substring(0, 6);
-    let dobCheck = parseInt(line2.substring(6, 7), 10);
-    if (!isNaN(dobCheck)) {
-        dobRaw = correctField(dobRaw, dobCheck, true);
-    } else {
-        dobRaw = dobRaw.replace(/[DOQGE]/g, '0').replace(/[IL]/g, '1').replace(/S/g, '5').replace(/B/g, '8').replace(/Z/g, '2');
-    }
-    
-    function isValidDate(yy, mm, dd) {
-        const month = parseInt(mm, 10);
-        const day = parseInt(dd, 10);
-        const year = parseInt(yy, 10);
-        if (month < 1 || month > 12) return false;
-        if (day < 1 || day > 31) return false;
-        const daysInMonth = [0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-        if (day > daysInMonth[month]) return false;
-        const currentYear2Digit = new Date().getFullYear() % 100;
-        if (year > currentYear2Digit + 1) return false;
-        return true;
-    }
-    
-    // Verify date sanity
-    let dob = '';
-    if (dobRaw.length === 6 && !isNaN(parseInt(dobRaw))) {
-        const yy = dobRaw.substring(0, 2);
-        const mm = dobRaw.substring(2, 4);
-        const dd = dobRaw.substring(4, 6);
-        if (isValidDate(yy, mm, dd)) {
-            let year = parseInt(yy, 10);
-            let currentYear2Digit = new Date().getFullYear() % 100;
-            let fullYear = (year > currentYear2Digit) ? (1900 + year) : (2000 + year);
-            dob = `${fullYear}-${mm}-${dd}`;
-        } else {
-            console.warn(`Date Sanity Check failed for DOB: ${dobRaw}. Blanking field.`);
-            dobRaw = ""; 
-        }
-    }
+    // Extract Sex
+    const sexChar = line2[7];
+    const sex = sexChar === 'M' ? 'Male' : (sexChar === 'F' ? 'Female' : 'Unknown');
 
-    // --- Sex & Nationality ---
-    let sexRaw = line2.substring(7, 8);
-    let nationality = line2.substring(15, 18).replace(/</g, '');
-
-    // --- NIN Extraction ---
-    let nin = '';
-    const line1Clean = line1.replace(/\s+/g, '').toUpperCase();
-    
-    if (line1Clean.length >= 29) {
-        nin = line1Clean.substring(15, 29).replace(/O/g, '0');
-    }
-    
-    const ugaIndex = line1Clean.indexOf('UGA');
-    if ((!nin || nin.length !== 14) && ugaIndex >= 0 && line1Clean.length >= ugaIndex + 27) {
-        nin = line1Clean.substring(ugaIndex + 13, ugaIndex + 27).replace(/O/g, '0');
-    }
-    
-    if (!nin || nin.length !== 14) {
-        const match = line1Clean.match(/[A-Z]{2}[0-9A-Z]{10}[A-Z]{2}/);
-        if (match) nin = match[0].replace(/O/g, '0');
-    }
-
-    // --- Name Extraction ---
-    let line3Clean = line3.replace(/\s+/g, '<');
-    const parts = line3Clean.split(/<<+/).filter(p => p.length > 0);
-    
-    function isGarbageSegment(segment) {
-        if (segment.length === 1) return true;
-        if (segment.length < 3 && /^[KLEC87<]+$/.test(segment)) return true;
-        return false;
-    }
-    
-    const validParts = parts.filter(p => !isGarbageSegment(p));
-    
-    function cleanNamePart(name) {
-        name = name.replace(/</g, '');
-        if (name.length >= 3 && /[AEIOU]/.test(name)) return name;
-        return name.replace(/^[KLEC87]+(?=[BCDFGJKMNPQSTVXZ])/g, "");
-    }
-    
-    let surname = '';
-    let givenName = '';
-    if (validParts.length > 0) surname = cleanNamePart(validParts[0]);
-    if (validParts.length > 1) {
-        givenName = validParts.slice(1).map(cleanNamePart).filter(p => p.length > 0).join(' ');
-    }
-
-    let sex = sexRaw === 'M' ? 'Male' : (sexRaw === 'F' ? 'Female' : 'Unknown');
-    if (nin) {
-        let ninMatch = nin.match(/^([A-Z])([MF])(\d{2})([0-9A-Z]{10})$/);
-        if (ninMatch) {
-            sex = ninMatch[2] === 'M' ? 'Male' : 'Female';
-        }
-    }
-
-    return {
-        surname: surname,
-        givenName: givenName,
-        otherName: "",
+    const result = {
+        documentNumber: docNumRaw.replace(/</g, ''),
+        nin: extractNIN(line1),
+        dob: parseMRZDate(line2.substring(0, 6), 'dob') || '',
         sex: sex,
-        dateOfBirth: dob,
-        nationality: nationality || "UGA",
-        nin: nin,
+        expiry: parseMRZDate(line2.substring(8, 14), 'expiry') || '',
+        nationality: 'UGA',
+        ...parseMRZName(line3),
         phoneNumber: "",
         source: "OCR MRZ"
     };
+    
+    console.log('[MRZ] Parsed result:', result);
+    return result;
 }
