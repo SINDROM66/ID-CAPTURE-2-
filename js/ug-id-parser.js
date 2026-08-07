@@ -15,22 +15,20 @@ async function parseUgandaID(image) {
         throw new Error("Tesseract.js is not loaded.");
     }
 
-    try {
-        const worker = await Tesseract.createWorker('eng', 1, {}, {
-            tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<'
-        });
+    const worker = await Tesseract.createWorker('eng', 1, {}, {
+        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<'
+    });
 
+    try {
         console.log("Starting OCR Pass 1 (psm: 6)...");
         await worker.setParameters({ tessedit_pageseg_mode: 6 });
         let result1 = await worker.recognize(image);
-        console.log("========== RAW OCR TEXT (PASS 1) ==========\n" + result1.data.text + "\n===========================================");
         let mrzData = extractMRZ(result1.data.text);
 
         if (!mrzData) {
             console.log("Pass 1 failed, retrying with Pass 2 (psm: 4)...");
             await worker.setParameters({ tessedit_pageseg_mode: 4 });
             let result2 = await worker.recognize(image);
-            console.log("========== RAW OCR TEXT (PASS 2) ==========\n" + result2.data.text + "\n===========================================");
             mrzData = extractMRZ(result2.data.text);
         }
 
@@ -38,11 +36,32 @@ async function parseUgandaID(image) {
             console.log("Pass 2 failed, retrying with Pass 3 (psm: 3)...");
             await worker.setParameters({ tessedit_pageseg_mode: 3 });
             let result3 = await worker.recognize(image);
-            console.log("========== RAW OCR TEXT (PASS 3) ==========\n" + result3.data.text + "\n===========================================");
             mrzData = extractMRZ(result3.data.text);
         }
 
-        await worker.terminate();
+        // Lightweight Deskew Fallback
+        if (!mrzData && image instanceof HTMLCanvasElement) {
+            console.warn("Standard OCR passes failed. Attempting lightweight deskew fallback (-2°, +2°)...");
+            const angles = [-2, 2];
+            for (let angle of angles) {
+                console.log(`Testing rotation: ${angle}°`);
+                const rotatedCanvas = document.createElement('canvas');
+                rotatedCanvas.width = image.width;
+                rotatedCanvas.height = image.height;
+                const ctx = rotatedCanvas.getContext('2d');
+                ctx.translate(image.width / 2, image.height / 2);
+                ctx.rotate(angle * Math.PI / 180);
+                ctx.drawImage(image, -image.width / 2, -image.height / 2);
+                
+                await worker.setParameters({ tessedit_pageseg_mode: 6 });
+                let rotResult = await worker.recognize(rotatedCanvas);
+                mrzData = extractMRZ(rotResult.data.text);
+                if (mrzData) {
+                    console.log(`MRZ found after rotating ${angle}°!`);
+                    break;
+                }
+            }
+        }
 
         if (!mrzData) {
             throw new CardParseError("Could not find or read the Machine Readable Zone (MRZ) on the ID card.");
@@ -52,7 +71,16 @@ async function parseUgandaID(image) {
     } catch (error) {
         if (error instanceof CardParseError) throw error;
         throw new CardParseError("OCR Processing failed: " + error.message);
+    } finally {
+        await worker.terminate();
     }
+}
+
+function normalizeMRZLine(line) {
+    line = line.replace(/[^A-Z0-9<]/g, '');
+    if (line.length < 30) line = line.padEnd(30, '<');
+    if (line.length > 30) line = line.substring(0, 30);
+    return line;
 }
 
 /**
@@ -73,11 +101,7 @@ function extractMRZ(text) {
         const l3Valid = l3.split('<').length > 2;
 
         if (l1Valid && l2Valid && l3Valid) {
-            // Force exactly 30 characters using padding/truncation
-            l1 = (l1 + "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<").substring(0, 30);
-            l2 = (l2 + "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<").substring(0, 30);
-            l3 = (l3 + "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<").substring(0, 30);
-            return [l1, l2, l3];
+            return [normalizeMRZLine(l1), normalizeMRZLine(l2), normalizeMRZLine(l3)];
         }
     }
     return null;
@@ -107,51 +131,112 @@ function calculateICAOChecksum(str) {
 /**
  * Parses the extracted TD1 MRZ lines into standard fields.
  */
+const OCR_SUBSTITUTIONS = {
+    'O': '0', 'Q': '0', 'D': '0', 'E': '0',
+    'I': '1', 'L': '1',
+    'Z': '2',
+    'S': '5', 'G': '6',
+    'B': '8',
+    'K': '<', 'C': '<', 'A': '4'
+};
+
 function parseMRZ(mrzLines) {
     let [line1, line2, line3] = mrzLines;
     
     // Auto-correction function for checksums
-    function correctField(fieldStr, expectedCheck) {
+    function correctField(fieldStr, expectedCheck, isNumeric = false) {
         if (calculateICAOChecksum(fieldStr) === expectedCheck) return fieldStr;
-        const subs = [
-            {f: 'O', t: '0'}, {f: 'I', t: '1'}, {f: 'B', t: '8'}, 
-            {f: 'S', t: '5'}, {f: 'Z', t: '2'}, {f: 'D', t: '0'}, 
-            {f: 'Q', t: '0'}, {f: 'G', t: '6'}
-        ];
-        // Try substitutions
-        for (let sub of subs) {
-            const regex = new RegExp(sub.f, 'g');
-            if (regex.test(fieldStr)) {
-                let testStr = fieldStr.replace(regex, sub.t);
+        
+        // 1. Single substitutions
+        for (let i = 0; i < fieldStr.length; i++) {
+            const char = fieldStr[i];
+            if (OCR_SUBSTITUTIONS[char]) {
+                const subChar = OCR_SUBSTITUTIONS[char];
+                if (isNumeric && subChar === '<') continue;
+                
+                let testStr = fieldStr.substring(0, i) + subChar + fieldStr.substring(i + 1);
                 if (calculateICAOChecksum(testStr) === expectedCheck) {
-                    console.log(`Auto-corrected OCR checksum: ${fieldStr} -> ${testStr}`);
+                    console.log(`Auto-corrected OCR checksum (single): ${fieldStr} -> ${testStr}`);
                     return testStr;
                 }
             }
         }
-        return fieldStr; // Return original if all fail
+        
+        // 2. Pairwise combinations
+        let attempts = 0;
+        for (let i = 0; i < fieldStr.length - 1; i++) {
+            for (let j = i + 1; j < fieldStr.length; j++) {
+                const char1 = fieldStr[i];
+                const char2 = fieldStr[j];
+                if (OCR_SUBSTITUTIONS[char1] && OCR_SUBSTITUTIONS[char2]) {
+                    const sub1 = OCR_SUBSTITUTIONS[char1];
+                    const sub2 = OCR_SUBSTITUTIONS[char2];
+                    if (isNumeric && (sub1 === '<' || sub2 === '<')) continue;
+                    
+                    let testStr = fieldStr.split('');
+                    testStr[i] = sub1;
+                    testStr[j] = sub2;
+                    testStr = testStr.join('');
+                    
+                    if (calculateICAOChecksum(testStr) === expectedCheck) {
+                        console.log(`Auto-corrected OCR checksum (pair): ${fieldStr} -> ${testStr}`);
+                        return testStr;
+                    }
+                    attempts++;
+                    if (attempts >= 3) break;
+                }
+            }
+            if (attempts >= 3) break;
+        }
+
+        console.warn(`Checksum unrecoverable for field: ${fieldStr} after testing substitutions.`);
+        return fieldStr;
     }
 
     // --- Document Number ---
     let docNumRaw = line1.substring(5, 14);
     let docNumCheck = parseInt(line1.substring(14, 15), 10);
     if (!isNaN(docNumCheck)) {
-        docNumRaw = correctField(docNumRaw, docNumCheck);
-        if (calculateICAOChecksum(docNumRaw) !== docNumCheck) {
-            console.warn("Document Number checksum failed, but proceeding with extracted data.");
-        }
+        docNumRaw = correctField(docNumRaw, docNumCheck, true);
     }
     
     // --- DOB ---
     let dobRaw = line2.substring(0, 6);
     let dobCheck = parseInt(line2.substring(6, 7), 10);
     if (!isNaN(dobCheck)) {
-        dobRaw = correctField(dobRaw, dobCheck);
-        if (calculateICAOChecksum(dobRaw) !== dobCheck) {
-            console.warn("Date of Birth checksum failed, but proceeding with extracted data.");
-        }
+        dobRaw = correctField(dobRaw, dobCheck, true);
     } else {
-        dobRaw = dobRaw.replace(/[DOQG]/g, '0').replace(/I/g, '1').replace(/S/g, '5').replace(/B/g, '8').replace(/Z/g, '2');
+        dobRaw = dobRaw.replace(/[DOQGE]/g, '0').replace(/[IL]/g, '1').replace(/S/g, '5').replace(/B/g, '8').replace(/Z/g, '2');
+    }
+    
+    function isValidDate(yy, mm, dd) {
+        const month = parseInt(mm, 10);
+        const day = parseInt(dd, 10);
+        const year = parseInt(yy, 10);
+        if (month < 1 || month > 12) return false;
+        if (day < 1 || day > 31) return false;
+        const daysInMonth = [0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        if (day > daysInMonth[month]) return false;
+        const currentYear2Digit = new Date().getFullYear() % 100;
+        if (year > currentYear2Digit + 1) return false;
+        return true;
+    }
+    
+    // Verify date sanity
+    let dob = '';
+    if (dobRaw.length === 6 && !isNaN(parseInt(dobRaw))) {
+        const yy = dobRaw.substring(0, 2);
+        const mm = dobRaw.substring(2, 4);
+        const dd = dobRaw.substring(4, 6);
+        if (isValidDate(yy, mm, dd)) {
+            let year = parseInt(yy, 10);
+            let currentYear2Digit = new Date().getFullYear() % 100;
+            let fullYear = (year > currentYear2Digit) ? (1900 + year) : (2000 + year);
+            dob = `${fullYear}-${mm}-${dd}`;
+        } else {
+            console.warn(`Date Sanity Check failed for DOB: ${dobRaw}. Blanking field.`);
+            dobRaw = ""; 
+        }
     }
 
     // --- Sex & Nationality ---
@@ -159,44 +244,46 @@ function parseMRZ(mrzLines) {
     let nationality = line2.substring(15, 18).replace(/</g, '');
 
     // --- NIN Extraction ---
-    let nin = "";
-    let matchNIN = line1.match(/(?:ID|AC)UGA(.{24})/);
-    if (matchNIN && matchNIN[1].length >= 24) {
-        nin = matchNIN[1].substring(10, 24).replace(/</g, '').replace(/O/g, '0');
-    } else {
-        // Fallback if IDUGA is missing
-        nin = line1.substring(15, 29).replace(/</g, '').replace(/O/g, '0');
+    let nin = '';
+    const line1Clean = line1.replace(/\s+/g, '').toUpperCase();
+    
+    if (line1Clean.length >= 29) {
+        nin = line1Clean.substring(15, 29).replace(/O/g, '0');
+    }
+    
+    const ugaIndex = line1Clean.indexOf('UGA');
+    if ((!nin || nin.length !== 14) && ugaIndex >= 0 && line1Clean.length >= ugaIndex + 27) {
+        nin = line1Clean.substring(ugaIndex + 13, ugaIndex + 27).replace(/O/g, '0');
+    }
+    
+    if (!nin || nin.length !== 14) {
+        const match = line1Clean.match(/[A-Z]{2}[0-9A-Z]{10}[A-Z]{2}/);
+        if (match) nin = match[0].replace(/O/g, '0');
     }
 
     // --- Name Extraction ---
     let line3Clean = line3.replace(/\s+/g, '<');
-    let parts = line3Clean.split(/<<+/).filter(p => p.length > 0);
+    const parts = line3Clean.split(/<<+/).filter(p => p.length > 0);
+    
+    function isGarbageSegment(segment) {
+        if (segment.length === 1) return true;
+        if (segment.length < 3 && /^[KLEC87<]+$/.test(segment)) return true;
+        return false;
+    }
+    
+    const validParts = parts.filter(p => !isGarbageSegment(p));
+    
+    function cleanNamePart(name) {
+        name = name.replace(/</g, '');
+        if (name.length >= 3 && /[AEIOU]/.test(name)) return name;
+        return name.replace(/^[KLEC87]+(?=[BCDFGJKMNPQSTVXZ])/g, "");
+    }
     
     let surname = '';
     let givenName = '';
-
-    function cleanNamePart(name) {
-        name = name.replace(/</g, '');
-        if (name.length <= 1) return "";
-        if (/^[KLEC87]+$/.test(name)) return ""; // Filter pure OCR hallucinations
-        return name;
-    }
-
-    if (parts.length > 0) surname = cleanNamePart(parts[0]);
-    if (parts.length > 1) {
-        givenName = parts.slice(1).map(cleanNamePart).filter(p => p.length > 0).join(' ');
-    }
-
-    // --- DOB Formatting ---
-    let dob = '';
-    if (dobRaw && dobRaw.length === 6 && !isNaN(parseInt(dobRaw))) {
-        let year = parseInt(dobRaw.substring(0, 2), 10);
-        let monthStr = dobRaw.substring(2, 4);
-        let dayStr = dobRaw.substring(4, 6);
-        
-        let currentYear2Digit = new Date().getFullYear() % 100;
-        let fullYear = (year > currentYear2Digit) ? (1900 + year) : (2000 + year);
-        dob = `${fullYear}-${monthStr}-${dayStr}`;
+    if (validParts.length > 0) surname = cleanNamePart(validParts[0]);
+    if (validParts.length > 1) {
+        givenName = validParts.slice(1).map(cleanNamePart).filter(p => p.length > 0).join(' ');
     }
 
     let sex = sexRaw === 'M' ? 'Male' : (sexRaw === 'F' ? 'Female' : 'Unknown');

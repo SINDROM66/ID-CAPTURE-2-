@@ -254,13 +254,27 @@ function cropMRZRegion(canvas) {
         bottom = searchHeight;
     }
     
-    const cropHeight = bottom - top;
-    const cropCanvas = document.createElement("canvas");
+    let cropHeight = bottom - top;
+    let cropCanvas = document.createElement("canvas");
     cropCanvas.width = width;
     cropCanvas.height = cropHeight;
     cropCanvas.getContext("2d").putImageData(ctx.getImageData(0, startY + top, width, cropHeight), 0, 0);
     
-    console.log(`[Crop] Cropped MRZ region: ${width}x${cropHeight}`);
+    // MRZ Crop Downscaling Guardrail (Max 1200px wide)
+    const MAX_MRZ_WIDTH = 1200;
+    if (cropCanvas.width > MAX_MRZ_WIDTH) {
+        const scale = MAX_MRZ_WIDTH / cropCanvas.width;
+        const scaledCanvas = document.createElement('canvas');
+        scaledCanvas.width = MAX_MRZ_WIDTH;
+        scaledCanvas.height = Math.round(cropCanvas.height * scale);
+        const sCtx = scaledCanvas.getContext('2d');
+        sCtx.drawImage(cropCanvas, 0, 0, scaledCanvas.width, scaledCanvas.height);
+        cropCanvas = scaledCanvas;
+        console.log(`[Crop] Downscaled MRZ to: ${cropCanvas.width}x${cropCanvas.height}`);
+    } else {
+        console.log(`[Crop] Cropped MRZ region: ${width}x${cropHeight}`);
+    }
+    
     return cropCanvas;
 }
 
