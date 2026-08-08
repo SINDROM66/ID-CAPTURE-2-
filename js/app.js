@@ -127,6 +127,11 @@ function setupForm() {
             phone: document.getElementById('phone').value,
         };
 
+        if (record.nin && !/^[A-Z]{2}[A-Z0-9]{12}$/.test(record.nin)) {
+            alert('Invalid NIN format');
+            return;
+        }
+
         try {
             await window.appDB.addRecord(record);
             form.reset();

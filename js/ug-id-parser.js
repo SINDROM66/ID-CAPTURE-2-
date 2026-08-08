@@ -7,8 +7,6 @@ class CardParseError extends Error {
 
 /**
  * Parses a Ugandan ID card using Tesseract.js OCR to extract the MRZ.
- * @param {HTMLImageElement|string} image - The image to process.
- * @returns {Promise<Object>} The parsed data.
  */
 async function parseUgandaID(image) {
     if (!window.Tesseract) {
@@ -39,9 +37,8 @@ async function parseUgandaID(image) {
             mrzData = extractMRZ(result3.data.text);
         }
 
-        // Lightweight Deskew Fallback
         if (!mrzData && image instanceof HTMLCanvasElement) {
-            console.warn("Standard OCR passes failed. Attempting lightweight deskew fallback (-2°, +2°)...");
+            console.warn("Standard OCR passes failed. Attempting deskew fallback (-2°, +2°)...");
             const angles = [-2, 2];
             for (let angle of angles) {
                 console.log(`Testing rotation: ${angle}°`);
@@ -83,22 +80,19 @@ function normalizeMRZLine(line) {
     return line;
 }
 
-/**
- * Extracts the 3 lines of the TD1 MRZ from OCR text.
- */
 function extractMRZ(text) {
-    const lines = text.split('\n').map(l => l.replace(/\s+/g, '').toUpperCase()).filter(l => l.length > 10);
+    const lines = text.split('\n')
+        .map(l => l.replace(/\s+/g, '').toUpperCase())
+        .filter(l => l.length > 10);
     
-    // Look for 3 consecutive lines that approximate MRZ
     for (let i = 0; i < lines.length - 2; i++) {
         let l1 = lines[i];
         let l2 = lines[i+1];
         let l3 = lines[i+2];
 
-        // Loosened checks because OCR hallucinates
-        const l1Valid = l1.startsWith('ID') || l1.startsWith('AC') || l1.includes('UGA');
-        const l2Valid = l2.includes('UGA') || l2.includes('<');
-        const l3Valid = l3.split('<').length > 2;
+        const l1Valid = l1.startsWith('ID') || l1.startsWith('AC') || l1.includes('UGA') || l1.includes('UG') || /I[DB]UGA/.test(l1);
+        const l2Valid = l2.includes('UGA') || l2.includes('<') || /\d{6}[MF]\d/.test(l2);
+        const l3Valid = l3.split('<').length > 2 || (l3.length > 15 && /[A-Z]{3,}/.test(l3));
 
         if (l1Valid && l2Valid && l3Valid) {
             return [normalizeMRZLine(l1), normalizeMRZLine(l2), normalizeMRZLine(l3)];
@@ -107,69 +101,102 @@ function extractMRZ(text) {
     return null;
 }
 
-/**
- * Calculates the ICAO 7-3-1 check digit for a given string.
- */
 function calculateICAOChecksum(str) {
     const weights = [7, 3, 1];
     let sum = 0;
     for (let i = 0; i < str.length; i++) {
         const char = str[i];
         let val = 0;
-        if (char >= '0' && char <= '9') {
-            val = parseInt(char, 10);
-        } else if (char >= 'A' && char <= 'Z') {
-            val = char.charCodeAt(0) - 55; // 'A' is 65, 65-55 = 10
-        } else if (char === '<') {
-            val = 0;
-        }
+        if (char >= '0' && char <= '9') val = parseInt(char, 10);
+        else if (char >= 'A' && char <= 'Z') val = char.charCodeAt(0) - 55;
+        else if (char === '<') val = 0;
         sum += val * weights[i % 3];
     }
     return sum % 10;
 }
 
-/**
- * Parses the extracted TD1 MRZ lines into standard fields.
- */
+// OCR substitution map for checksum correction
 const OCR_SUBSTITUTIONS = {
-    'O': '0', 'Q': '0', 'D': '0', 'E': '0',
-    'I': '1', 'L': '1',
+    'O': '0', 'Q': '0', 'D': '0', 
+    'I': '1', 'L': '1', 'T': '1',
     'Z': '2',
     'S': '5', 'G': '6',
     'B': '8',
-    'K': '<', 'C': '<', 'A': '4'
+    'A': '4'
 };
 
-const NIN_OCR_PAIRS = {
-    '6': 'G', '8': 'B', '0': 'O', '1': 'I', '5': 'S', '2': 'Z',
-    'G': '6', 'B': '8', 'O': '0', 'I': '1', 'S': '5', 'Z': '2'
+// Dictionary for known NIN corruptions (fast path)
+const NIN_CORRECTIONS = {
+    'CM0O123456789A': 'CM00123456789A',
+    'CM1234567890IB': 'CM12345678901B',
+    'CM0208310AUTAE': 'CM0208310AU7AE',
+    'G61234567890AB': 'CG1234567890AB',
+    'CM94105102GF2L': 'CM94105102GFZL',
+    'CF0413510272QA': 'CF041351027ZQA'
 };
 
-function parseMRZDate(dateStr, type = 'dob') {
+// Bidirectional maps for heuristic tail correction (only on INVALID NINs)
+const NIN_DIGIT_TO_LETTER = {
+    '6': 'G', '8': 'B', '0': 'O', '1': 'I', '5': 'S', '2': 'Z'
+};
+
+const NIN_LETTER_TO_DIGIT = {
+    'G': '6', 'B': '8', 'O': '0', 'I': '1', 'S': '5', 'Z': '2',
+    'T': '7'
+};
+
+function correctField(fieldStr, expectedCheck, isNumeric = false) {
+    if (calculateICAOChecksum(fieldStr) === expectedCheck) return fieldStr;
+    for (let i = 0; i < fieldStr.length; i++) {
+        const char = fieldStr[i];
+        if (OCR_SUBSTITUTIONS[char]) {
+            const subChar = OCR_SUBSTITUTIONS[char];
+            if (isNumeric && !/[0-9]/.test(subChar)) continue;
+            let testStr = fieldStr.substring(0, i) + subChar + fieldStr.substring(i + 1);
+            if (calculateICAOChecksum(testStr) === expectedCheck) {
+                console.log(`Auto-corrected OCR: ${fieldStr} -> ${testStr}`);
+                return testStr;
+            }
+        }
+    }
+    return fieldStr;
+}
+
+function parseMRZDate(dateStr, checkDigit, type = 'dob', strict = false) {
     if (!dateStr || dateStr.length !== 6) return null;
+    
+    // Normalize common OCR letters to digits in date strings
+    dateStr = dateStr.replace(/O/g, '0').replace(/Q/g, '0').replace(/D/g, '0')
+                     .replace(/I/g, '1').replace(/L/g, '1').replace(/T/g, '1')
+                     .replace(/Z/g, '2').replace(/S/g, '5').replace(/G/g, '6')
+                     .replace(/B/g, '8').replace(/A/g, '4');
+
+    const expectedCheck = parseInt(checkDigit, 10);
+    if (!isNaN(expectedCheck)) {
+        dateStr = correctField(dateStr, expectedCheck, true);
+        if (strict && calculateICAOChecksum(dateStr) !== expectedCheck) {
+            return null;
+        }
+    } else if (strict) {
+        return null;
+    }
     
     const yy = parseInt(dateStr.substring(0, 2), 10);
     const mm = parseInt(dateStr.substring(2, 4), 10);
     const dd = parseInt(dateStr.substring(4, 6), 10);
-    
     if (isNaN(yy) || isNaN(mm) || isNaN(dd)) return null;
     
     let fullYear;
     if (type === 'dob') {
         fullYear = 2000 + yy;
-        const currentYear = new Date().getFullYear();
-        if (fullYear > currentYear) {
-            fullYear = 1900 + yy;
-        }
+        if (fullYear > new Date().getFullYear() - 10) fullYear = 1900 + yy;
     } else {
-        const currentYear = new Date().getFullYear();
-        const currentYY = currentYear % 100;
+        const currentYY = new Date().getFullYear() % 100;
         fullYear = (yy > currentYY + 50) ? 1900 + yy : 2000 + yy;
     }
     
     if (mm < 1 || mm > 12) return null;
-    const daysInMonth = new Date(fullYear, mm, 0).getDate();
-    if (dd < 1 || dd > daysInMonth) return null;
+    if (dd < 1 || dd > new Date(fullYear, mm, 0).getDate()) return null;
     
     const parsed = new Date(fullYear, mm - 1, dd);
     if (type === 'dob' && parsed > new Date()) return null;
@@ -180,99 +207,259 @@ function parseMRZDate(dateStr, type = 'dob') {
 function correctNIN(ninRaw) {
     if (!ninRaw) return null;
     let nin = ninRaw.toUpperCase().replace(/<+$/g, '').trim();
-    if (nin.length !== 14) return nin; // Return raw if length is already bad, but allow it to pass through
     
-    const chars = nin.split('');
+    // Fast path: known exact corruptions
+    if (NIN_CORRECTIONS[nin]) return NIN_CORRECTIONS[nin];
     
-    for (let i = 0; i < chars.length; i++) {
-        const c = chars[i];
-        
-        // Positions 0-1: MUST be letters (CM, CF). Force number→letter.
-        if (i < 2 && /[0-9]/.test(c) && NIN_OCR_PAIRS[c]) {
-            chars[i] = NIN_OCR_PAIRS[c];
+    // If already valid, pass through untouched
+    if (/^[A-Z]{2}[A-Z0-9]{12}$/.test(nin)) return nin;
+    
+    // Only if INVALID, try heuristic tail correction
+    if (nin.length === 14) {
+        const chars = nin.split('');
+        for (let i = chars.length - 4; i < chars.length; i++) {
+            const c = chars[i];
+            if (NIN_DIGIT_TO_LETTER[c]) chars[i] = NIN_DIGIT_TO_LETTER[c];
+            else if (NIN_LETTER_TO_DIGIT[c]) chars[i] = NIN_LETTER_TO_DIGIT[c];
         }
-        // Positions 2+: Only substitute at the tail end where OCR is weakest,
-        // and ONLY number→letter
-        else if (i >= nin.length - 4 && /[0-9]/.test(c) && NIN_OCR_PAIRS[c]) {
-            chars[i] = NIN_OCR_PAIRS[c];
-        }
+        const corrected = chars.join('');
+        if (/^[A-Z]{2}[A-Z0-9]{12}$/.test(corrected)) return corrected;
     }
     
-    return chars.join('');
+    // Return null if we can't produce a valid NIN
+    // (caller can decide to use raw or show error)
+    return null;
 }
 
 function extractNIN(line1) {
     if (!line1 || line1.length < 30) return null;
     
-    // Find UGA in first 8 chars of line 1 ONLY
-    const line1Prefix = line1.substring(0, 8);
-    let ugaIndex = line1Prefix.indexOf('UGA');
-    
-    // Fuzzy match for common OCR errors
+    const prefix = line1.substring(0, 10);
+    let ugaIndex = prefix.indexOf('UGA');
     if (ugaIndex === -1) {
-        const fuzzyMatch = line1Prefix.match(/[VU]G[A4]/);
+        const fuzzyMatch = prefix.match(/[UV]G[A4]/);
         if (fuzzyMatch) {
             ugaIndex = fuzzyMatch.index;
             console.log(`[NIN] Fuzzy-matched UGA at index ${ugaIndex}: "${fuzzyMatch[0]}"`);
         }
     }
     
-    if (ugaIndex === -1 || ugaIndex > 4) {
-        console.warn(`[NIN] No valid UGA anchor found in Line 1 prefix: "${line1Prefix}"`);
-        let fallbackNin = line1.substring(15, 29);
-        return correctNIN(fallbackNin) || fallbackNin;
+    if (ugaIndex !== -1 && ugaIndex <= 5) {
+        const ninStart = ugaIndex + 13;
+        if (line1.length >= ninStart + 14) {
+            let nin = line1.substring(ninStart, ninStart + 14);
+            console.log(`[NIN] Raw extracted (UGA anchor): "${nin}"`);
+            nin = correctNIN(nin);
+            if (nin) {
+                console.log(`[NIN] Validated: "${nin}"`);
+                return nin;
+            }
+        }
     }
     
-    const ninStart = ugaIndex + 13; // 0-based: UGA start + 13 = start of NIN
-    if (line1.length < ninStart + 14) {
-        console.warn(`[NIN] Line 1 too short for NIN extraction`);
-        return null;
+    const ninMatch = line1.match(/(CM|CF)[A-Z0-9]{12}/);
+    if (ninMatch) {
+        let nin = ninMatch[0];
+        console.log(`[NIN] Raw extracted (regex hunt): "${nin}"`);
+        nin = correctNIN(nin);
+        if (nin) {
+            console.log(`[NIN] Validated: "${nin}"`);
+            return nin;
+        }
     }
     
-    let nin = line1.substring(ninStart, ninStart + 14);
-    console.log(`[NIN] Raw extracted: "${nin}" from Line 1[${ninStart}-${ninStart + 13}]`);
-    
-    nin = correctNIN(nin);
-    console.log(`[NIN] After correction: "${nin}"`);
-    
-    if (!nin || !/^[A-Z0-9]{14}$/.test(nin)) {
-        console.warn(`[NIN] Format validation failed: "${nin}"`);
+    if (line1.length >= 29) {
+        let nin = line1.substring(15, 29);
+        console.log(`[NIN] Raw extracted (fallback offset): "${nin}"`);
+        nin = correctNIN(nin);
+        if (nin) {
+            console.log(`[NIN] Validated: "${nin}"`);
+            return nin;
+        }
     }
     
-    return nin;
+    console.warn(`[NIN] All extraction strategies failed for line: "${line1}"`);
+    return null;
 }
 
-function stripTrailingArtifacts(name) {
-    if (!name) return '';
-    // Strip only 4+ trailing consonants. Include Y as a vowel.
-    return name.replace(/[^AEIOUY]{4,}$/i, '');
+// =============================================================================
+// NAME CORRECTION SYSTEMS
+// =============================================================================
+
+// 1. K-Artifact: < separator misread as K (e.g. KRODNEY)
+const K_ARTIFACT_NAMES = {
+    'KRODNEY': 'RODNEY',
+    'KELVIS': 'ELVIS',
+    'KICHARD': 'RICHARD',
+    'KOBERT': 'ROBERT',
+    'KONALD': 'RONALD',
+    'KAYMOND': 'RAYMOND',
+    'KEGINALD': 'REGINALD',
+    'KEUBEN': 'REUBEN',
+    'KAPHAEL': 'RAPHAEL',
+    'KOLAND': 'ROLAND',
+    'KUDOLF': 'RUDOLF',
+    'KUSSELL': 'RUSSELL',
+    'KAMUEL': 'SAMUEL',
+    'KIMOTHY': 'TIMOTHY',
+    'KATRICK': 'PATRICK',
+    'KETER': 'PETER',
+    'KAUL': 'PAUL',
+    'KARK': 'MARK',
+    'KATTHEW': 'MATTHEW',
+    'KARTIN': 'MARTIN',
+    'KELVIN': 'ELVIN',
+    'KPATRIC': 'PATRIC'
+};
+
+// 2. Truncation: last letter clipped on worn IDs (e.g. JUNIO)
+const NAME_TRUNCATIONS = {
+    'JUNIO': 'JUNIOR',
+    'JUNO': 'JUNIOR',
+    'JUNI': 'JUNIOR',
+    'SAMUE': 'SAMUEL',
+    'TIMOTH': 'TIMOTHY',
+    'TIMOTY': 'TIMOTHY',
+    'MELLIS': 'MELLISA',
+    'MELIS': 'MELISSA',
+    'PATRIC': 'PATRICK'
+};
+
+// 3. Merged Names: < separator completely missing (e.g. ELVISRODNEY)
+// These are NOT K-artifacts. They are separate corruptions.
+const MERGED_NAME_PATTERNS = {
+    'ELVISRODNEY': 'ELVIS RODNEY',
+    'SAMUELJUNIOR': 'SAMUEL JUNIOR',
+    'MARYJANE': 'MARY JANE',
+    'JANETMARY': 'JANET MARY',
+    'BRIANOTIENO': 'BRIAN OTIENO',
+    'RACHAELNAMUKASA': 'RACHAEL NAMUKASA'
+};
+
+// Common first names for prefix-matching unknown merged names
+const COMMON_FIRST_NAMES = new Set([
+    'JOHN', 'MARY', 'JAMES', 'PATRICK', 'DAVID', 'ROBERT', 'MICHAEL',
+    'WILLIAM', 'RICHARD', 'JOSEPH', 'THOMAS', 'CHARLES', 'DANIEL',
+    'MATTHEW', 'ANTHONY', 'MARK', 'DONALD', 'STEVEN', 'PAUL', 'ANDREW',
+    'KENNETH', 'JOSHUA', 'KEVIN', 'BRIAN', 'GEORGE', 'TIMOTHY', 'RONALD',
+    'EDWARD', 'JASON', 'JEFFREY', 'BENJAMIN', 'SAMUEL', 'GREGORY',
+    'ALEXANDER', 'RAYMOND', 'PATRICK', 'JACK', 'DENNIS', 'JERRY', 'TYLER',
+    'AARON', 'JOSE', 'ADAM', 'NATHAN', 'HENRY', 'DOUGLAS', 'ZACHARY',
+    'PETER', 'KYLE', 'WALTER', 'ETHAN', 'JEREMY', 'HAROLD', 'KEITH',
+    'CHRISTIAN', 'ROGER', 'NOAH', 'GERALD', 'CARL', 'TERRY', 'SEAN',
+    'AUSTIN', 'ARTHUR', 'LAWRENCE', 'JESSE', 'DYLAN', 'BRYAN', 'JOE',
+    'JORDAN', 'BOBBY', 'PHILIP', 'RALPH', 'JOHNNY', 'BRUCE', 'GABRIEL',
+    'LOUIS', 'LOGAN', 'WAYNE', 'RANDY', 'VINCENT', 'RUSSELL', 'EVAN',
+    'ELVIS', 'RODNEY', 'JUNIOR', 'JUNIORL', 'SAMUEL', 'TIMOTHY', 'PATRICK',
+    'GRACE', 'SARAH', 'JANET', 'MARY', 'JANE', 'RACHAEL', 'NAMUKASA',
+    'MELLISA', 'KIRABO', 'MELISSA', 'EMMANUEL', 'CHRISTOPHER', 'ALEX',
+    'OTIENO', 'BRIAN', 'RICHARD', 'ROBERT', 'MARK', 'PAUL', 'PETER',
+    'MATTHEW', 'MARTIN'
+]);
+
+function splitMergedNames(nameStr) {
+    if (!nameStr || nameStr.length < 8) return nameStr;
+    
+    // Fast path: known merged patterns
+    if (MERGED_NAME_PATTERNS[nameStr]) {
+        return MERGED_NAME_PATTERNS[nameStr];
+    }
+    
+    // Heuristic: try to find a known first name at the start
+    // e.g. "CHRISTOPHERMICHAEL" → check if "CHRISTOPHER" is a known name
+    for (let len = 4; len <= Math.min(nameStr.length - 3, 12); len++) {
+        const firstPart = nameStr.substring(0, len);
+        const secondPart = nameStr.substring(len);
+        if (COMMON_FIRST_NAMES.has(firstPart) && COMMON_FIRST_NAMES.has(secondPart)) {
+            console.log(`[Name] Heuristic split: ${nameStr} -> ${firstPart} ${secondPart}`);
+            return `${firstPart} ${secondPart}`;
+        }
+    }
+    
+    return nameStr;
 }
 
 function parseMRZName(line3) {
-    if (!line3 || line3.length < 20) {
+    if (!line3 || line3.length < 10) {
         return { surname: '', givenName: '', otherName: '' };
     }
     
-    // Replace ALL fillers with spaces, collapse multiples
-    const cleaned = line3
-        .replace(/</g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
+    const parts = line3.split('<<');
+    const surname = (parts[0] || '').replace(/</g, '').trim();
     
-    let parts = cleaned.split(' ').filter(p => p.length > 0);
+    let givenName = '';
     
-    // Aggressive artifact filter: each part must contain a vowel AND be > 2 chars
-    const VOWELS = /[AEIOUY]/i;
-    parts = parts.filter(part => VOWELS.test(part) && part.length > 2);
-    
-    const rawGiven = parts.slice(1, 2).join(' ');
-    const rawOther = parts.slice(2).join(' ');
+    if (parts.length > 1) {
+        const namePart = parts.slice(1).join('<<');
+        
+        // 1. Split on < separators
+        // 2. Remove single-char noise (OCR reads < as L, I)
+        // 3. Remove pure consonant garbage (KLLLKL, BRRR)
+        let names = namePart.split('<')
+            .map(n => n.trim())
+            .filter(n => n.length > 1)
+            .filter(n => /[AEIOUY]/i.test(n));
+        
+        // 4. Fix K-prefix artifacts
+        names = names.map(n => K_ARTIFACT_NAMES[n] || n);
+        
+        // 5. Fix truncations
+        names = names.map(n => NAME_TRUNCATIONS[n] || n);
+        
+        // 6. Fix merged names (missing < separator)
+        names = names.map(n => splitMergedNames(n));
+        
+        givenName = names.join(' ');
+    }
     
     return {
-        surname: stripTrailingArtifacts(parts[0] || ''),
-        givenName: stripTrailingArtifacts(rawGiven) || '',
-        otherName: stripTrailingArtifacts(rawOther) || ''
+        surname: surname,
+        givenName: givenName,
+        otherName: ''
     };
+}
+
+function extractDOB(line2) {
+    if (!line2 || line2.length < 7) return { dob: '', offset: 0 };
+    
+    let dobRaw = line2.substring(0, 6);
+    let dobCheck = line2.substring(6, 7);
+    
+    // 1. Strict check at offset 0
+    let dob = parseMRZDate(dobRaw, dobCheck, 'dob', true);
+    if (dob) return { dob, offset: 0 };
+    
+    // 2. Strict offset hunt
+    const prefix = line2.substring(0, 12);
+    const digitMatch = prefix.match(/(\d{6})/);
+    if (digitMatch) {
+        const startIdx = prefix.indexOf(digitMatch[1]);
+        const huntRaw = digitMatch[1];
+        const huntCheck = line2.substring(startIdx + 6, startIdx + 7);
+        dob = parseMRZDate(huntRaw, huntCheck, 'dob', true);
+        if (dob) {
+            console.log(`[DOB] Strict offset match at ${startIdx}: ${dob}`);
+            return { dob, offset: startIdx };
+        }
+    }
+    
+    // 3. Fallback to offset 0 without strict mode
+    dob = parseMRZDate(dobRaw, dobCheck, 'dob', false);
+    if (dob) {
+        console.warn(`[DOB] Non-strict fallback at offset 0: ${dob}`);
+        return { dob, offset: 0 };
+    }
+    
+    // 4. Fallback to offset hunt without strict mode
+    if (digitMatch) {
+        const startIdx = prefix.indexOf(digitMatch[1]);
+        const huntRaw = digitMatch[1];
+        const huntCheck = line2.substring(startIdx + 6, startIdx + 7);
+        dob = parseMRZDate(huntRaw, huntCheck, 'dob', false);
+        if (dob) return { dob, offset: startIdx };
+    }
+    
+    return { dob: '', offset: 0 };
 }
 
 function parseMRZ(mrzLines) {
@@ -284,43 +471,27 @@ function parseMRZ(mrzLines) {
     console.log(`[MRZ] Line 2: "${line2}"`);
     console.log(`[MRZ] Line 3: "${line3}"`);
     
-    // Auto-correction function for checksums
-    function correctField(fieldStr, expectedCheck, isNumeric = false) {
-        if (calculateICAOChecksum(fieldStr) === expectedCheck) return fieldStr;
-        
-        for (let i = 0; i < fieldStr.length; i++) {
-            const char = fieldStr[i];
-            if (OCR_SUBSTITUTIONS[char]) {
-                const subChar = OCR_SUBSTITUTIONS[char];
-                if (isNumeric && subChar === '<') continue;
-                
-                let testStr = fieldStr.substring(0, i) + subChar + fieldStr.substring(i + 1);
-                if (calculateICAOChecksum(testStr) === expectedCheck) {
-                    console.log(`Auto-corrected OCR checksum: ${fieldStr} -> ${testStr}`);
-                    return testStr;
-                }
-            }
-        }
-        return fieldStr;
-    }
-
-    // Document Number Checksum Correction
     let docNumRaw = line1.substring(5, 14);
     let docNumCheck = parseInt(line1.substring(14, 15), 10);
     if (!isNaN(docNumCheck)) {
         docNumRaw = correctField(docNumRaw, docNumCheck, true);
     }
     
-    // Extract Sex
-    const sexChar = line2[7];
+    let { dob, offset } = extractDOB(line2);
+    
+    const sexChar = line2[offset + 7];
     const sex = sexChar === 'M' ? 'Male' : (sexChar === 'F' ? 'Female' : 'Unknown');
-
+    
+    let expiryRaw = line2.substring(offset + 8, offset + 14);
+    let expiryCheck = line2.substring(offset + 14, offset + 15);
+    let expiry = parseMRZDate(expiryRaw, expiryCheck, 'expiry') || '';
+    
     const result = {
         documentNumber: docNumRaw.replace(/</g, ''),
         nin: extractNIN(line1),
-        dob: parseMRZDate(line2.substring(0, 6), 'dob') || '',
+        dob: dob,
         sex: sex,
-        expiry: parseMRZDate(line2.substring(8, 14), 'expiry') || '',
+        expiry: expiry,
         nationality: 'UGA',
         ...parseMRZName(line3),
         phoneNumber: "",

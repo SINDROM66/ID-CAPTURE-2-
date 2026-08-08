@@ -27,7 +27,8 @@ async def run():
     images = [
         "test_images/samuel_old.jpg",
         "test_images/mellisa_new.jpg",
-        "test_images/timothy_new.jpg"
+        "test_images/timothy_new.jpg",
+        "test_images/Elvis_new.jpg"
     ]
     
     async with async_playwright() as p:

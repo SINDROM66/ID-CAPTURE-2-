@@ -124,12 +124,34 @@ async function fixOrientation(file, img) {
         case 2: ctx.translate(canvas.width, 0); ctx.scale(-1, 1); break;
         case 3: ctx.translate(canvas.width, canvas.height); ctx.rotate(Math.PI); break;
         case 4: ctx.translate(0, canvas.height); ctx.scale(1, -1); break;
-        case 5: ctx.rotate(0.5 * Math.PI); ctx.scale(1, -1); break;
-        case 6: ctx.rotate(0.5 * Math.PI); ctx.translate(0, -canvas.width); break;
-        case 7: ctx.rotate(0.5 * Math.PI); ctx.translate(canvas.height, -canvas.width); ctx.scale(-1, 1); break;
-        case 8: ctx.rotate(-0.5 * Math.PI); ctx.translate(-canvas.height, 0); break;
+        case 5: 
+            ctx.translate(canvas.width / 2, canvas.height / 2);
+            ctx.rotate(0.5 * Math.PI); 
+            ctx.scale(1, -1); 
+            break;
+        case 6: 
+            ctx.translate(canvas.width / 2, canvas.height / 2);
+            ctx.rotate(0.5 * Math.PI); 
+            ctx.translate(0, -canvas.width); 
+            break;
+        case 7: 
+            ctx.translate(canvas.width / 2, canvas.height / 2);
+            ctx.rotate(0.5 * Math.PI); 
+            ctx.translate(canvas.height, -canvas.width); 
+            ctx.scale(-1, 1); 
+            break;
+        case 8: 
+            ctx.translate(canvas.width / 2, canvas.height / 2);
+            ctx.rotate(-0.5 * Math.PI); 
+            ctx.translate(-canvas.height, 0); 
+            break;
     }
-    ctx.drawImage(img, 0, 0);
+    // CRITICAL FIX: Draw relative to center for rotated orientations
+    if (orientation >= 5) {
+        ctx.drawImage(img, -img.width / 2, -img.height / 2);
+    } else {
+        ctx.drawImage(img, 0, 0);
+    }
     ctx.restore();
     
     return canvas;
@@ -210,72 +232,24 @@ function adaptiveThresholding(canvas) {
     return canvas;
 }
 
-// Crop strictly to the MRZ using Horizontal Projection Profile
+// We no longer crop to the MRZ, as it fails on complex backgrounds (e.g., fingers, desks).
+// Instead, we pass the whole ID card to Tesseract and let our robust extractMRZ scoring window find the MRZ.
 function cropMRZRegion(canvas) {
-    const ctx = canvas.getContext("2d");
-    const width = canvas.width;
-    const height = canvas.height;
+    const MAX_DIM = 1200;
     
-    // Get bottom 45% of the ID card (where MRZ lives)
-    const startY = Math.floor(height * 0.55);
-    const searchHeight = height - startY;
-    const imgData = ctx.getImageData(0, startY, width, searchHeight);
-    const data = imgData.data;
-    
-    // Calculate horizontal projection (count black pixels per row)
-    const rowSums = new Int32Array(searchHeight);
-    for (let y = 0; y < searchHeight; y++) {
-        let blackCount = 0;
-        for (let x = 0; x < width; x++) {
-            if (data[(y * width + x) * 4] === 0) blackCount++;
-        }
-        rowSums[y] = blackCount;
-    }
-    
-    // Find text block boundaries
-    const threshold = width * 0.05; // At least 5% black pixels
-    let top = 0;
-    let bottom = searchHeight - 1;
-    
-    for (let y = 0; y < searchHeight; y++) {
-        if (rowSums[y] > threshold) { top = y; break; }
-    }
-    for (let y = searchHeight - 1; y >= 0; y--) {
-        if (rowSums[y] > threshold) { bottom = y; break; }
-    }
-    
-    // Add padding
-    top = Math.max(0, top - 20);
-    bottom = Math.min(searchHeight, bottom + 20);
-    
-    if (bottom - top < 50) {
-        console.warn("[Crop] Failed to isolate MRZ. Falling back to generic crop.");
-        top = Math.floor(searchHeight * 0.1);
-        bottom = searchHeight;
-    }
-    
-    let cropHeight = bottom - top;
-    let cropCanvas = document.createElement("canvas");
-    cropCanvas.width = width;
-    cropCanvas.height = cropHeight;
-    cropCanvas.getContext("2d").putImageData(ctx.getImageData(0, startY + top, width, cropHeight), 0, 0);
-    
-    // MRZ Crop Downscaling Guardrail (Max 1200px wide)
-    const MAX_MRZ_WIDTH = 1200;
-    if (cropCanvas.width > MAX_MRZ_WIDTH) {
-        const scale = MAX_MRZ_WIDTH / cropCanvas.width;
+    if (canvas.width > MAX_DIM || canvas.height > MAX_DIM) {
+        const scale = Math.min(MAX_DIM / canvas.width, MAX_DIM / canvas.height);
         const scaledCanvas = document.createElement('canvas');
-        scaledCanvas.width = MAX_MRZ_WIDTH;
-        scaledCanvas.height = Math.round(cropCanvas.height * scale);
+        scaledCanvas.width = Math.round(canvas.width * scale);
+        scaledCanvas.height = Math.round(canvas.height * scale);
         const sCtx = scaledCanvas.getContext('2d');
-        sCtx.drawImage(cropCanvas, 0, 0, scaledCanvas.width, scaledCanvas.height);
-        cropCanvas = scaledCanvas;
-        console.log(`[Crop] Downscaled MRZ to: ${cropCanvas.width}x${cropCanvas.height}`);
-    } else {
-        console.log(`[Crop] Cropped MRZ region: ${width}x${cropHeight}`);
+        sCtx.drawImage(canvas, 0, 0, scaledCanvas.width, scaledCanvas.height);
+        console.log(`[Crop] Passed whole image (downscaled to: ${scaledCanvas.width}x${scaledCanvas.height})`);
+        return scaledCanvas;
     }
     
-    return cropCanvas;
+    console.log(`[Crop] Passed whole image (original size: ${canvas.width}x${canvas.height})`);
+    return canvas;
 }
 
 // Main File Handler
@@ -414,8 +388,10 @@ function showScannerView() {
 function populateForm(record) {
     document.getElementById('surname').value = record.surname || '';
     document.getElementById('givenName').value = record.givenName || '';
+    // Only clear otherName if parser explicitly returned empty string
+    // (New IDs don't have other names in MRZ, old ones don't either)
     document.getElementById('otherName').value = record.otherName || '';
-    document.getElementById('dob').value = record.dateOfBirth || '';
+    document.getElementById('dob').value = record.dob || '';
     
     if (record.sex) {
         const sexSelect = document.getElementById('sex');
@@ -425,8 +401,6 @@ function populateForm(record) {
     
     document.getElementById('nationality').value = record.nationality || 'UGA';
     document.getElementById('nin').value = record.nin || '';
-    
-    // Clear phone number as it's not in the ID barcode usually
     document.getElementById('phone').value = '';
 }
 

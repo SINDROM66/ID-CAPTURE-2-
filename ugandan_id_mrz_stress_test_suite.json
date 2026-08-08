@@ -1,0 +1,792 @@
+{
+  "metadata": {
+    "format": "Ugandan National ID TD1 MRZ",
+    "line_length": 30,
+    "description": "Stress test variations for OCR parser validation",
+    "generated_for": "ug-id-parser.js stress testing"
+  },
+  "test_cases": [
+    {
+      "id": 1,
+      "name": "Single Given Name - Male",
+      "corruption_type": "clean",
+      "mrz_lines": [
+        "IDUGA1234567890CM1234567890AB1",
+        "0010159M2907125UGA<<<<<<<<<<0",
+        "OTIM<<JOHN<<<<<<<<<<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "OTIM",
+        "givenName": "JOHN",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "2000-10-15",
+        "nin": "CM1234567890AB",
+        "nationality": "UGA"
+      },
+      "notes": "Baseline: single given name, CM prefix NIN, 2000s DOB"
+    },
+    {
+      "id": 2,
+      "name": "Double Given Name - Female",
+      "corruption_type": "clean",
+      "mrz_lines": [
+        "IDUGA9876543210CF9876543210CD2",
+        "9503054F2907125UGA<<<<<<<<<<8",
+        "AKELLO<<MARY<JANE<<<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "AKELLO",
+        "givenName": "MARY JANE",
+        "otherName": "",
+        "sex": "Female",
+        "dob": "1995-03-05",
+        "nin": "CF9876543210CD",
+        "nationality": "UGA"
+      },
+      "notes": "Baseline: double given name, CF prefix NIN (female), 1990s DOB"
+    },
+    {
+      "id": 3,
+      "name": "Triple Given Name - Old ID Style",
+      "corruption_type": "clean",
+      "mrz_lines": [
+        "IDUGA0193072462CM000351093UXF7",
+        "0009139M2901215UGA190121<<<<<7",
+        "LYOMOKI<<SAMUEL<JUNIOR<ALEX<<"
+      ],
+      "expected": {
+        "surname": "LYOMOKI",
+        "givenName": "SAMUEL JUNIOR ALEX",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "2000-09-13",
+        "nin": "CM000351093UXF",
+        "nationality": "UGA"
+      },
+      "notes": "Triple given names - tests that all post-surname names go to givenName"
+    },
+    {
+      "id": 4,
+      "name": "Century Boundary - 1999",
+      "corruption_type": "clean",
+      "mrz_lines": [
+        "IDUGA5555555555CM5555555555EF3",
+        "9912319M2907125UGA<<<<<<<<<<2",
+        "MUKASA<<PATRICK<<<<<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "MUKASA",
+        "givenName": "PATRICK",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "1999-12-31",
+        "nin": "CM5555555555EF",
+        "nationality": "UGA"
+      },
+      "notes": "Tests century pivot: 99 → 1999 (not 2099)"
+    },
+    {
+      "id": 5,
+      "name": "Century Boundary - 2001",
+      "corruption_type": "clean",
+      "mrz_lines": [
+        "IDUGA6666666666CM6666666666GH4",
+        "0101015M2907125UGA<<<<<<<<<<9",
+        "NAMUYA<<SARAH<<<<<<<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "NAMUYA",
+        "givenName": "SARAH",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "2001-01-01",
+        "nin": "CM6666666666GH",
+        "nationality": "UGA"
+      },
+      "notes": "Tests century pivot: 01 → 2001"
+    },
+    {
+      "id": 6,
+      "name": "Leap Year DOB - 2000-02-29",
+      "corruption_type": "clean",
+      "mrz_lines": [
+        "IDUGA7777777777CM7777777777IJ5",
+        "0002293M2907125UGA<<<<<<<<<<1",
+        "OKELLO<<JAMES<<<<<<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "OKELLO",
+        "givenName": "JAMES",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "2000-02-29",
+        "nin": "CM7777777777IJ",
+        "nationality": "UGA"
+      },
+      "notes": "Tests valid leap year date parsing"
+    },
+    {
+      "id": 7,
+      "name": "K-Artifact - KRODNEY",
+      "corruption_type": "k_artifact",
+      "mrz_lines": [
+        "IDUGA0195889954CM94105102GF2L<",
+        "9410039M2907125UGA190712<<<<<0",
+        "KIMERA<<ELVIS<KRODNEY<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "KIMERA",
+        "givenName": "ELVIS RODNEY",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "1994-10-03",
+        "nin": "CM94105102GFZL",
+        "nationality": "UGA"
+      },
+      "notes": "Tests K_ARTIFACT_NAMES dictionary: KRODNEY → RODNEY"
+    },
+    {
+      "id": 8,
+      "name": "K-Artifact - KELVIN",
+      "corruption_type": "k_artifact",
+      "mrz_lines": [
+        "IDUGA1111111111CM1111111111KL6",
+        "8805055M2907125UGA<<<<<<<<<<3",
+        "MUKASA<<KELVIN<<<<<<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "MUKASA",
+        "givenName": "ELVIN",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "1988-05-05",
+        "nin": "CM1111111111KL",
+        "nationality": "UGA"
+      },
+      "notes": "Tests K_ARTIFACT_NAMES: KELVIN → ELVIN. NOTE: If not in dict, stays KELVIN."
+    },
+    {
+      "id": 9,
+      "name": "K-Prefix Real Name - KATO",
+      "corruption_type": "clean",
+      "mrz_lines": [
+        "IDUGA2222222222CM2222222222MN7",
+        "7601011M2907125UGA<<<<<<<<<<4",
+        "KATO<<PETER<<<<<<<<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "KATO",
+        "givenName": "PETER",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "1976-01-01",
+        "nin": "CM2222222222MN",
+        "nationality": "UGA"
+      },
+      "notes": "KATO is a real surname - must NOT be corrected. Tests that K_ARTIFACT only applies to given names."
+    },
+    {
+      "id": 10,
+      "name": "Real K-Name - KIRABO",
+      "corruption_type": "clean",
+      "mrz_lines": [
+        "IDUGA1943196106CF0413510272QA<",
+        "0412317F3605174UGA<<<<<<<<<<4",
+        "AGABA<<MELLISA<KIRABO<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "AGABA",
+        "givenName": "MELLISA KIRABO",
+        "otherName": "",
+        "sex": "Female",
+        "dob": "2004-12-31",
+        "nin": "CF041351027ZQA",
+        "nationality": "UGA"
+      },
+      "notes": "KIRABO is a real name - must be preserved. Tests vowel filter doesn't strip it."
+    },
+    {
+      "id": 11,
+      "name": "Truncation - JUNIO",
+      "corruption_type": "truncation",
+      "mrz_lines": [
+        "IDUGA0193072462CM000351093UXF<",
+        "0009139M2901215UGA190121<<<<<7",
+        "LYOMOKI<<SAMUEL<JUNIO<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "LYOMOKI",
+        "givenName": "SAMUEL JUNIOR",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "2000-09-13",
+        "nin": "CM000351093UXF",
+        "nationality": "UGA"
+      },
+      "notes": "Tests NAME_TRUNCATIONS dictionary: JUNIO → JUNIOR"
+    },
+    {
+      "id": 12,
+      "name": "Truncation - SAMUE",
+      "corruption_type": "truncation",
+      "mrz_lines": [
+        "IDUGA3333333333CM3333333333PQ8",
+        "9201013M2907125UGA<<<<<<<<<<6",
+        "OKOT<<SAMUE<<<<<<<<<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "OKOT",
+        "givenName": "SAMUEL",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "1992-01-01",
+        "nin": "CM3333333333PQ",
+        "nationality": "UGA"
+      },
+      "notes": "Tests NAME_TRUNCATIONS: SAMUE → SAMUEL"
+    },
+    {
+      "id": 13,
+      "name": "Truncation - TIMOTH",
+      "corruption_type": "truncation",
+      "mrz_lines": [
+        "IDUGA4444444444CM4444444444RS9",
+        "8501017M2907125UGA<<<<<<<<<<2",
+        "OPIO<<TIMOTH<<<<<<<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "OPIO",
+        "givenName": "TIMOTHY",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "1985-01-01",
+        "nin": "CM4444444444RS",
+        "nationality": "UGA"
+      },
+      "notes": "Tests NAME_TRUNCATIONS: TIMOTH → TIMOTHY"
+    },
+    {
+      "id": 14,
+      "name": "Truncation - PATRIC",
+      "corruption_type": "truncation",
+      "mrz_lines": [
+        "IDUGA5555555555CM5555555555TU0",
+        "7801012M2907125UGA<<<<<<<<<<8",
+        "ODONG<<PATRIC<<<<<<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "ODONG",
+        "givenName": "PATRICK",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "1978-01-01",
+        "nin": "CM5555555555TU",
+        "nationality": "UGA"
+      },
+      "notes": "Tests NAME_TRUNCATIONS: PATRIC → PATRICK"
+    },
+    {
+      "id": 15,
+      "name": "Merged Names - ELVISRODNEY",
+      "corruption_type": "merged",
+      "mrz_lines": [
+        "IDUGA0195889954CM94105102GF2L<",
+        "9410039M2907125UGA190712<<<<<0",
+        "KIMERA<<ELVISRODNEY<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "KIMERA",
+        "givenName": "ELVIS RODNEY",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "1994-10-03",
+        "nin": "CM94105102GFZL",
+        "nationality": "UGA"
+      },
+      "notes": "Tests camelCase splitter: ELVISRODNEY → ELVIS RODNEY. NOTE: Current code removed splitMergedNames, so this may fail."
+    },
+    {
+      "id": 16,
+      "name": "Merged Names - SAMUELJUNIOR",
+      "corruption_type": "merged",
+      "mrz_lines": [
+        "IDUGA0193072462CM000351093UXF<",
+        "0009139M2901215UGA190121<<<<<7",
+        "LYOMOKI<<SAMUELJUNIOR<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "LYOMOKI",
+        "givenName": "SAMUEL JUNIOR",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "2000-09-13",
+        "nin": "CM000351093UXF",
+        "nationality": "UGA"
+      },
+      "notes": "Tests merged name handling: SAMUELJUNIOR → SAMUEL JUNIOR"
+    },
+    {
+      "id": 17,
+      "name": "NIN OCR - O/0 Confusion",
+      "corruption_type": "nin_corruption",
+      "mrz_lines": [
+        "IDUGA6666666666CM0O123456789A1",
+        "9001015M2907125UGA<<<<<<<<<<3",
+        "SSEKANDI<<ROBERT<<<<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "SSEKANDI",
+        "givenName": "ROBERT",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "1990-01-01",
+        "nin": "CM00123456789A",
+        "nationality": "UGA"
+      },
+      "notes": "Tests NIN correction: O→0 at position 2+ (tail end). Input has O at pos 4."
+    },
+    {
+      "id": 18,
+      "name": "NIN OCR - I/1 Confusion at Tail",
+      "corruption_type": "nin_corruption",
+      "mrz_lines": [
+        "IDUGA7777777777CM1234567890IB2",
+        "8801011M2907125UGA<<<<<<<<<<4",
+        "KALULE<<DAVID<<<<<<<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "KALULE",
+        "givenName": "DAVID",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "1988-01-01",
+        "nin": "CM12345678901B",
+        "nationality": "UGA"
+      },
+      "notes": "Tests NIN_DIGIT_TO_LETTER: I at tail → 1. Wait, I→1 is letter→digit. Tests NIN_LETTER_TO_DIGIT."
+    },
+    {
+      "id": 19,
+      "name": "NIN OCR - T/7 Confusion at Tail",
+      "corruption_type": "nin_corruption",
+      "mrz_lines": [
+        "IDUGA1321896642CM0208310AUTAE<",
+        "0204174M3511048UGA<<<<<<<<<<7",
+        "MUYUNGA<<TIMOTHY<<<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "MUYUNGA",
+        "givenName": "TIMOTHY",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "2002-04-17",
+        "nin": "CM0208310AU7AE",
+        "nationality": "UGA"
+      },
+      "notes": "Tests NIN_LETTER_TO_DIGIT: T at tail → 7. This is the Timothy scenario."
+    },
+    {
+      "id": 20,
+      "name": "NIN OCR - 6/G Confusion at Start",
+      "corruption_type": "nin_corruption",
+      "mrz_lines": [
+        "IDUGA8888888888G61234567890AB3",
+        "9501017F2907125UGA<<<<<<<<<<5",
+        "NAKATO<<GRACE<<<<<<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "NAKATO",
+        "givenName": "GRACE",
+        "otherName": "",
+        "sex": "Female",
+        "dob": "1995-01-01",
+        "nin": "CG1234567890AB",
+        "nationality": "UGA"
+      },
+      "notes": "Tests NIN_DIGIT_TO_LETTER: 6 at positions 0-1 → G. Input has 6 at pos 2 (0-indexed), but wait - NIN starts after doc number."
+    },
+    {
+      "id": 21,
+      "name": "DOB OCR - Leading A Artifact",
+      "corruption_type": "dob_corruption",
+      "mrz_lines": [
+        "IDUGA1943196106CF0413510272QA<",
+        "A0412317F3605174UGA<<<<<<<<<4",
+        "AGABA<<MELLISA<KIRABO<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "AGABA",
+        "givenName": "MELLISA KIRABO",
+        "otherName": "",
+        "sex": "Female",
+        "dob": "2004-12-31",
+        "nin": "CF041351027ZQA",
+        "nationality": "UGA"
+      },
+      "notes": "Tests extractDOB Strategy 2: leading A artifact, scans for 6-digit cluster. Mellisa scenario."
+    },
+    {
+      "id": 22,
+      "name": "DOB OCR - Leading Garbage L",
+      "corruption_type": "dob_corruption",
+      "mrz_lines": [
+        "IDUGA9999999999CM9999999999XY4",
+        "L9201013M2907125UGA<<<<<<<<<6",
+        "OCAN<<BENON<<<<<<<<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "OCAN",
+        "givenName": "BENON",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "1992-01-01",
+        "nin": "CM9999999999XY",
+        "nationality": "UGA"
+      },
+      "notes": "Tests extractDOB with leading L artifact. DOB cluster starts at index 1."
+    },
+    {
+      "id": 23,
+      "name": "DOB OCR - O/0 Confusion",
+      "corruption_type": "dob_corruption",
+      "mrz_lines": [
+        "IDUGA0000000000CM0000000000ZZ5",
+        "9O10155M2907125UGA<<<<<<<<<<7",
+        "AMANYA<<JOSHUA<<<<<<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "AMANYA",
+        "givenName": "JOSHUA",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "1990-10-15",
+        "nin": "CM0000000000ZZ",
+        "nationality": "UGA"
+      },
+      "notes": "Tests DOB checksum correction: O→0 substitution in date string."
+    },
+    {
+      "id": 24,
+      "name": "Long Surname",
+      "corruption_type": "edge_case",
+      "mrz_lines": [
+        "IDUGA1212121212CM1212121212AB6",
+        "8501011M2907125UGA<<<<<<<<<<2",
+        "MUSENERO<<JOE<<<<<<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "MUSENERO",
+        "givenName": "JOE",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "1985-01-01",
+        "nin": "CM1212121212AB",
+        "nationality": "UGA"
+      },
+      "notes": "Long surname with short given name. Tests name field parsing with << anchor."
+    },
+    {
+      "id": 25,
+      "name": "Short Surname + Long Given Names",
+      "corruption_type": "edge_case",
+      "mrz_lines": [
+        "IDUGA3434343434CM3434343434CD7",
+        "7601011M2907125UGA<<<<<<<<<<4",
+        "OK<<CHRISTOPHER<MICHAEL<PAUL<"
+      ],
+      "expected": {
+        "surname": "OK",
+        "givenName": "CHRISTOPHER MICHAEL PAUL",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "1976-01-01",
+        "nin": "CM3434343434CD",
+        "nationality": "UGA"
+      },
+      "notes": "Very short surname (2 chars) with three given names. Tests << splitting."
+    },
+    {
+      "id": 26,
+      "name": "Single Char Artifact Filter",
+      "corruption_type": "edge_case",
+      "mrz_lines": [
+        "IDUGA5656565656CM5656565656EF8",
+        "9101015M2907125UGA<<<<<<<<<<9",
+        "ABO<<PETER<L<K<<<<<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "ABO",
+        "givenName": "PETER",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "1991-01-01",
+        "nin": "CM5656565656EF",
+        "nationality": "UGA"
+      },
+      "notes": "Tests single-char filter: L and K artifacts after PETER should be dropped."
+    },
+    {
+      "id": 27,
+      "name": "Consonant Garbage Filter",
+      "corruption_type": "edge_case",
+      "mrz_lines": [
+        "IDUGA7878787878CM7878787878GH9",
+        "8301013M2907125UGA<<<<<<<<<<1",
+        "ODOCH<<JOHN<KLLLKL<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "ODOCH",
+        "givenName": "JOHN",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "1983-01-01",
+        "nin": "CM7878787878GH",
+        "nationality": "UGA"
+      },
+      "notes": "Tests vowel filter: KLLLKL has no vowels → discarded."
+    },
+    {
+      "id": 28,
+      "name": "Female CF Prefix",
+      "corruption_type": "clean",
+      "mrz_lines": [
+        "IDUGA9090909090CF9090909090IJ0",
+        "0202027F2907125UGA<<<<<<<<<<3",
+        "ATIM<<JANET<MARY<<<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "ATIM",
+        "givenName": "JANET MARY",
+        "otherName": "",
+        "sex": "Female",
+        "dob": "2002-02-02",
+        "nin": "CF9090909090IJ",
+        "nationality": "UGA"
+      },
+      "notes": "Female ID with CF prefix and double given name."
+    },
+    {
+      "id": 29,
+      "name": "Century Pivot - 2010",
+      "corruption_type": "clean",
+      "mrz_lines": [
+        "IDUGA1010101010CM1010101010KL1",
+        "1001019M2907125UGA<<<<<<<<<<5",
+        "BWIRE<<MOSES<<<<<<<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "BWIRE",
+        "givenName": "MOSES",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "2010-01-01",
+        "nin": "CM1010101010KL",
+        "nationality": "UGA"
+      },
+      "notes": "Tests that 10 → 2010 (not 1910) since 2010 is valid for IDs (10+ years old)."
+    },
+    {
+      "id": 30,
+      "name": "Invalid Date - 31st April",
+      "corruption_type": "edge_case",
+      "mrz_lines": [
+        "IDUGA2323232323CM2323232323MN2",
+        "9504319M2907125UGA<<<<<<<<<<7",
+        "KINTU<<ANDREW<<<<<<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "KINTU",
+        "givenName": "ANDREW",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "",
+        "nin": "CM2323232323MN",
+        "nationality": "UGA"
+      },
+      "notes": "April 31st doesn't exist. Tests that invalid dates return empty string, not crash."
+    },
+    {
+      "id": 31,
+      "name": "Image Rotation 90° CW",
+      "corruption_type": "image_rotation",
+      "mrz_lines": [
+        "N/A - IMAGE LEVEL",
+        "",
+        ""
+      ],
+      "expected": {
+        "notes": "Test with image rotated 90° clockwise. fixOrientation should handle EXIF orientation 6."
+      },
+      "notes": "Tests canvas rotation fix: orientation 6 (90° CW)."
+    },
+    {
+      "id": 32,
+      "name": "Image Rotation 90° CCW",
+      "corruption_type": "image_rotation",
+      "mrz_lines": [
+        "N/A - IMAGE LEVEL",
+        "",
+        ""
+      ],
+      "expected": {
+        "notes": "Test with image rotated 90° counter-clockwise. fixOrientation should handle EXIF orientation 8."
+      },
+      "notes": "Tests canvas rotation fix: orientation 8 (90° CCW)."
+    },
+    {
+      "id": 33,
+      "name": "Upside Down Image",
+      "corruption_type": "image_rotation",
+      "mrz_lines": [
+        "N/A - IMAGE LEVEL",
+        "",
+        ""
+      ],
+      "expected": {
+        "notes": "Test with image rotated 180°. fixOrientation should handle EXIF orientation 3."
+      },
+      "notes": "Tests canvas rotation fix: orientation 3 (180°)."
+    },
+    {
+      "id": 34,
+      "name": "Old ID Format - Samuel",
+      "corruption_type": "old_format",
+      "mrz_lines": [
+        "IDUGA0193072462CM000351093UXF<",
+        "0009139M2901215UGA190121<<<<<7",
+        "LYOMOKI<<SAMUEL<JUNIOR<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "LYOMOKI",
+        "givenName": "SAMUEL JUNIOR",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "2000-09-13",
+        "nin": "CM000351093UXF",
+        "nationality": "UGA"
+      },
+      "notes": "Old Ugandan ID format. Tests compatibility with older card layouts."
+    },
+    {
+      "id": 35,
+      "name": "New ID Format - Elvis",
+      "corruption_type": "new_format",
+      "mrz_lines": [
+        "IDUGA0195889954CM94105102GF2L<",
+        "9410039M2907125UGA190712<<<<<0",
+        "KIMERA<<ELVIS<RODNEY<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "KIMERA",
+        "givenName": "ELVIS RODNEY",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "1994-10-03",
+        "nin": "CM94105102GFZL",
+        "nationality": "UGA"
+      },
+      "notes": "New Ugandan ID format (pink strip). Tests current generation cards."
+    },
+    {
+      "id": 36,
+      "name": "Complex Name - Ochieng",
+      "corruption_type": "clean",
+      "mrz_lines": [
+        "IDUGA4545454545CM4545454545QR3",
+        "8808081M2907125UGA<<<<<<<<<<6",
+        "OCHIENG<<BRIAN<OTIENO<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "OCHIENG",
+        "givenName": "BRIAN OTIENO",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "1988-08-08",
+        "nin": "CM4545454545QR",
+        "nationality": "UGA"
+      },
+      "notes": "Common Luo name structure with two given names."
+    },
+    {
+      "id": 37,
+      "name": "Complex Name - Nantongo",
+      "corruption_type": "clean",
+      "mrz_lines": [
+        "IDUGA6767676767CF6767676767ST4",
+        "9505154F2907125UGA<<<<<<<<<<8",
+        "NANTONGO<<RACHAEL<NAMUKASA<<<<"
+      ],
+      "expected": {
+        "surname": "NANTONGO",
+        "givenName": "RACHAEL NAMUKASA",
+        "otherName": "",
+        "sex": "Female",
+        "dob": "1995-05-15",
+        "nin": "CF6767676767ST",
+        "nationality": "UGA"
+      },
+      "notes": "Common Baganda female name with two given names."
+    },
+    {
+      "id": 38,
+      "name": "Complex Name - Twinomujuni",
+      "corruption_type": "clean",
+      "mrz_lines": [
+        "IDUGA8989898989CM8989898989UV5",
+        "9001015M2907125UGA<<<<<<<<<<1",
+        "TWINOMUJUNI<<EMMANUEL<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "TWINOMUJUNI",
+        "givenName": "EMMANUEL",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "1990-01-01",
+        "nin": "CM8989898989UV",
+        "nationality": "UGA"
+      },
+      "notes": "Long surname (12 chars) with single given name. Tests field boundaries."
+    },
+    {
+      "id": 39,
+      "name": "Multiple Corruptions - K + Truncation + Leading A",
+      "corruption_type": "multiple_corruptions",
+      "mrz_lines": [
+        "IDUGA1111111111CM1111111111KL6",
+        "A0010159M2907125UGA<<<<<<<<<3",
+        "OTIM<<JOHN<KPATRIC<<<<<<<<<<<"
+      ],
+      "expected": {
+        "surname": "OTIM",
+        "givenName": "JOHN PATRICK",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "2000-10-15",
+        "nin": "CM1111111111KL",
+        "nationality": "UGA"
+      },
+      "notes": "Stress test: leading A on line 2, K-prefix on PATRIC, truncation PATRIC→PATRICK. Tests all fixes simultaneously."
+    },
+    {
+      "id": 40,
+      "name": "Nightmare - Everything Wrong",
+      "corruption_type": "nightmare",
+      "mrz_lines": [
+        "IDUGA2222222222CM2222222222MN7",
+        "L8501012M2907125UGA<<<<<<<<<4",
+        "MUKASA<<KELVIN<TIMOTH<KLLLKL<<"
+      ],
+      "expected": {
+        "surname": "MUKASA",
+        "givenName": "ELVIN TIMOTHY",
+        "otherName": "",
+        "sex": "Male",
+        "dob": "1985-01-01",
+        "nin": "CM2222222222MN",
+        "nationality": "UGA"
+      },
+      "notes": "Absolute worst case: leading L, KELVIN→ELVIN, TIMOTH→TIMOTHY, KLLLKL dropped."
+    }
+  ]
+}
