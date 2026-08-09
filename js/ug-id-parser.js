@@ -410,7 +410,22 @@ function parseMRZName(line3) {
         return { surname: '', givenName: '', otherName: '' };
     }
     
-    const parts = line3.split('<<');
+    let parts = line3.split('<<');
+    
+    // If the first part contains '<', the '<<' separator was corrupted or missing
+    if (parts.length > 0 && parts[0].includes('<')) {
+        const firstLess = line3.indexOf('<');
+        let s = line3.substring(0, firstLess);
+        let g = line3.substring(firstLess + 1);
+        
+        // Trim common OCR artifact K/L/C/S from the end of the surname
+        if (s.length > 4 && /[KLCS]$/.test(s)) {
+            s = s.substring(0, s.length - 1);
+        }
+        
+        parts = [s, g];
+    }
+    
     const surname = (parts[0] || '').replace(/</g, '').trim();
     
     let givenName = '';
@@ -426,8 +441,14 @@ function parseMRZName(line3) {
             .filter(n => n.length > 1)
             .filter(n => /[AEIOUY]/i.test(n));
         
-        // 4. Fix K-prefix artifacts
-        names = names.map(n => K_ARTIFACT_NAMES[n] || n);
+        // 4. Fix K-prefix artifacts and dynamic single-letter prefixes
+        names = names.map(n => {
+            if (K_ARTIFACT_NAMES[n]) return K_ARTIFACT_NAMES[n];
+            if (n.length > 4 && /^[KLCS]/.test(n) && COMMON_FIRST_NAMES.has(n.substring(1))) {
+                return n.substring(1);
+            }
+            return n;
+        });
         
         // 5. Fix truncations
         names = names.map(n => NAME_TRUNCATIONS[n] || n);
@@ -463,12 +484,10 @@ function extractDOB(line2) {
     let dob = parseMRZDate(line2.substring(0, 6), line2.substring(6, 7), 'dob', true);
     if (dob && isValidDOB(dob)) return { dob, offset: 0 };
     
-    // Strategy 2: Strict offset hunt
-    const prefix = line2.substring(0, 12);
-    const digitMatch = prefix.match(/(\d{6})/);
-    if (digitMatch) {
-        const startIdx = prefix.indexOf(digitMatch[1]);
-        const huntRaw = digitMatch[1];
+    // Strategy 2: Strict offset hunt loop (max shift of 2 to avoid false positives)
+    for (let startIdx = 1; startIdx <= 2; startIdx++) {
+        if (startIdx + 7 > line2.length) break;
+        const huntRaw = line2.substring(startIdx, startIdx + 6);
         const huntCheck = line2.substring(startIdx + 6, startIdx + 7);
         dob = parseMRZDate(huntRaw, huntCheck, 'dob', true);
         if (dob && isValidDOB(dob)) {
@@ -484,10 +503,10 @@ function extractDOB(line2) {
         return { dob, offset: 0 };
     }
 
-    // Strategy 4: Fallback to offset hunt without strict mode
-    if (digitMatch) {
-        const startIdx = prefix.indexOf(digitMatch[1]);
-        const huntRaw = digitMatch[1];
+    // Strategy 4: Fallback to offset hunt loop without strict mode
+    for (let startIdx = 1; startIdx <= 2; startIdx++) {
+        if (startIdx + 7 > line2.length) break;
+        const huntRaw = line2.substring(startIdx, startIdx + 6);
         const huntCheck = line2.substring(startIdx + 6, startIdx + 7);
         dob = parseMRZDate(huntRaw, huntCheck, 'dob', false);
         if (dob && isValidDOB(dob)) {
