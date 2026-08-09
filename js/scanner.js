@@ -196,18 +196,7 @@ async function handleFileSelect(e) {
             img.src = url;
         });
         imageSource = await fixOrientation(file, imageSource);
-        
-        if (imageSource.height > imageSource.width * 1.2) {
-            const rotated = document.createElement('canvas');
-            rotated.width = imageSource.height;
-            rotated.height = imageSource.width;
-            const rCtx = rotated.getContext('2d');
-            rCtx.translate(rotated.width, 0);
-            rCtx.rotate(0.5 * Math.PI);
-            rCtx.drawImage(imageSource, 0, 0);
-            imageSource = rotated;
-            console.log(`[Upload] Rotated portrait image to landscape`);
-        }
+
 
         console.log(`[Upload] Source dimensions: ${imageSource.width}x${imageSource.height}`);
         
