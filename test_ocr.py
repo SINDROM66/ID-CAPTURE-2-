@@ -56,6 +56,11 @@ async def run_test():
                 print(f"  NIN: {nin}")
                 print(f"  Sex: {sex}")
                 
+                # Screenshot the result page
+                screenshot_path = os.path.join(cwd, f"result_{img_name}.png")
+                await page.screenshot(path=screenshot_path, full_page=True)
+                print(f"[SCREENSHOT] Saved to {screenshot_path}")
+                
                 # Reset for next test
                 await page.click("#discard-btn")
                 
