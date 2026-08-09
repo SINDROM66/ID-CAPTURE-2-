@@ -1,8 +1,30 @@
-
-
 const PIN = 'SINDROM666';
 
-// 1. Setup UI Listeners (Synchronous, so it works immediately)
+// Security helpers
+function hashPin(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+        hash = ((hash << 5) - hash) + str.charCodeAt(i);
+        hash |= 0;
+    }
+    return 'h' + Math.abs(hash).toString(16);
+}
+
+function escapeHtml(text) {
+    if (text == null) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function safeCsv(str) {
+    if (str == null) return '""';
+    let s = String(str).replace(/"/g, '""');
+    if (/^[=+\-@]/.test(s)) s = "'" + s; // Prevent CSV formula injection
+    return `"${s}"`;
+}
+
+// 1. Setup UI Listeners
 setupAuth();
 setupTabs();
 setupSubNav();
@@ -37,6 +59,8 @@ function setupAuth() {
     const unlockBtn = document.getElementById('unlock-btn');
     const lockError = document.getElementById('lock-error');
 
+    const SESSION_KEY = hashPin(PIN + '_SESSION_SALT');
+
     function unlockApp() {
         lockScreen.style.opacity = '0';
         setTimeout(() => {
@@ -45,15 +69,15 @@ function setupAuth() {
         }, 400);
     }
 
-    if (localStorage.getItem('nssf_unlocked') === 'true') {
+    if (localStorage.getItem('nssf_unlocked') === SESSION_KEY) {
         lockScreen.style.display = 'none';
         mainApp.classList.remove('app-blurred');
         return;
     }
 
     function attemptUnlock() {
-        if (pinInput.value.trim().toUpperCase() === PIN.toUpperCase()) {
-            localStorage.setItem('nssf_unlocked', 'true');
+        if (hashPin(pinInput.value.trim().toUpperCase()) === hashPin(PIN)) {
+            localStorage.setItem('nssf_unlocked', SESSION_KEY);
             unlockApp();
         } else {
             lockError.classList.remove('hidden');
@@ -74,11 +98,9 @@ function setupTabs() {
 
     tabBtns.forEach(btn => {
         btn.addEventListener('click', () => {
-            // Remove active classes
             tabBtns.forEach(b => b.classList.remove('active'));
             tabContents.forEach(c => c.classList.add('hidden'));
 
-            // Add active to clicked
             btn.classList.add('active');
             const targetId = btn.getAttribute('data-target');
             document.getElementById(targetId).classList.remove('hidden');
@@ -106,7 +128,7 @@ function setupNetworkStatus() {
 
     window.addEventListener('online', updateOnlineStatus);
     window.addEventListener('offline', updateOnlineStatus);
-    updateOnlineStatus(); // Init
+    updateOnlineStatus();
 }
 
 function setupForm() {
@@ -132,12 +154,23 @@ function setupForm() {
             return;
         }
 
+        // Duplicate check
+        try {
+            const existing = await window.appDB.getAllRecords();
+            if (existing.some(r => r.nin && r.nin === record.nin)) {
+                alert('A record with this NIN already exists.');
+                return;
+            }
+        } catch (err) {
+            console.error("Duplicate check failed:", err);
+        }
+
         try {
             await window.appDB.addRecord(record);
             form.reset();
             updateRecordsBadge();
             alert('Record saved securely offline.');
-            showScannerView(); // Go back to scan mode
+            showScannerView();
         } catch (error) {
             console.error("Failed to save record:", error);
             alert("Error saving record. Please try again.");
@@ -168,7 +201,6 @@ function setupSubNav() {
     manualBtn.addEventListener('click', () => {
         manualBtn.classList.add('active');
         scanBtn.classList.remove('active');
-        
         scanView.classList.add('hidden');
         progressView.classList.add('hidden');
         formView.classList.remove('hidden');
@@ -187,7 +219,7 @@ async function renderRecords() {
     
     try {
         const records = await window.appDB.getAllRecords();
-        list.innerHTML = ''; // Clear
+        list.innerHTML = '';
 
         if (records.length === 0) {
             list.innerHTML = `
@@ -210,16 +242,38 @@ async function renderRecords() {
             const tr = document.createElement('tr');
             tr.style.borderBottom = "1px solid var(--border)";
             
+            const td = document.createElement('td');
+            td.style.padding = "12px 8px";
+            
+            const nameDiv = document.createElement('div');
+            nameDiv.style.fontWeight = "600";
+            nameDiv.style.color = "var(--text)";
+            nameDiv.style.marginBottom = "4px";
             const name = [record.surname, record.givenName, record.otherName].filter(Boolean).join(' ');
-
-            tr.innerHTML = `
-                <td style="padding: 12px 8px;">
-                    <div style="font-weight: 600; color: var(--text); margin-bottom: 4px;">${name}</div>
-                    <div style="font-size: 11px; color: var(--text-muted); display: flex; gap: 8px;">
-                        <span>NIN: ${record.nin}</span> | <span>DOB: ${record.dob}</span> | <span>SEX: ${record.sex}</span>
-                    </div>
-                </td>
-            `;
+            nameDiv.textContent = name;
+            
+            const metaDiv = document.createElement('div');
+            metaDiv.style.fontSize = "11px";
+            metaDiv.style.color = "var(--text-muted)";
+            metaDiv.style.display = "flex";
+            metaDiv.style.gap = "8px";
+            
+            const ninSpan = document.createElement('span');
+            ninSpan.textContent = `NIN: ${record.nin || ''}`;
+            const dobSpan = document.createElement('span');
+            dobSpan.textContent = `DOB: ${record.dob || ''}`;
+            const sexSpan = document.createElement('span');
+            sexSpan.textContent = `SEX: ${record.sex || ''}`;
+            
+            metaDiv.appendChild(ninSpan);
+            metaDiv.appendChild(document.createTextNode(' | '));
+            metaDiv.appendChild(dobSpan);
+            metaDiv.appendChild(document.createTextNode(' | '));
+            metaDiv.appendChild(sexSpan);
+            
+            td.appendChild(nameDiv);
+            td.appendChild(metaDiv);
+            tr.appendChild(td);
             list.appendChild(tr);
         });
 
@@ -228,7 +282,6 @@ async function renderRecords() {
     }
 }
 
-// Add export and clear logic
 document.addEventListener('DOMContentLoaded', () => {
     const exportBtn = document.getElementById('export-btn');
     const clearBtn = document.getElementById('clear-all-btn');
@@ -243,15 +296,15 @@ document.addEventListener('DOMContentLoaded', () => {
             
             records.forEach(r => {
                 const row = [
-                    `"${r.surname || ''}"`,
-                    `"${r.givenName || ''}"`,
-                    `"${r.otherName || ''}"`,
-                    `"${r.sex || ''}"`,
-                    `"${r.dob || ''}"`,
-                    `"${r.nationality || ''}"`,
-                    `"${r.nin || ''}"`,
-                    `"${r.phone || ''}"`,
-                    `"${r.timestamp || ''}"`
+                    safeCsv(r.surname),
+                    safeCsv(r.givenName),
+                    safeCsv(r.otherName),
+                    safeCsv(r.sex),
+                    safeCsv(r.dob),
+                    safeCsv(r.nationality),
+                    safeCsv(r.nin),
+                    safeCsv(r.phone),
+                    safeCsv(r.timestamp)
                 ];
                 csvRows.push(row.join(','));
             });
@@ -276,4 +329,3 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 });
-

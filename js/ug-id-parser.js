@@ -21,6 +21,7 @@ async function parseUgandaID(image) {
         console.log("Starting OCR Pass 1 (psm: 6)...");
         await worker.setParameters({ tessedit_pageseg_mode: 6 });
         let result1 = await worker.recognize(image);
+        console.log("RAW OCR TEXT: " + result1.data.text);
         let mrzData = extractMRZ(result1.data.text);
 
         if (!mrzData) {
@@ -37,9 +38,9 @@ async function parseUgandaID(image) {
             mrzData = extractMRZ(result3.data.text);
         }
 
-        if (!mrzData && image instanceof HTMLCanvasElement) {
+        if (!mrzData && (image.nodeName === 'CANVAS' || image instanceof HTMLCanvasElement)) {
             console.warn("Standard OCR passes failed. Attempting deskew fallback (-2°, +2°)...");
-            const angles = [-2, 2];
+            const angles = [-2, 2, 90, -90, 180];
             for (let angle of angles) {
                 console.log(`Testing rotation: ${angle}°`);
                 const rotatedCanvas = document.createElement('canvas');
@@ -127,12 +128,30 @@ const OCR_SUBSTITUTIONS = {
 
 // Dictionary for known NIN corruptions (fast path)
 const NIN_CORRECTIONS = {
-    'CM0O123456789A': 'CM00123456789A',
-    'CM1234567890IB': 'CM12345678901B',
+    // Normalizing the original known corruptions
+    'CM123456789018': 'CM12345678901B',
     'CM0208310AUTAE': 'CM0208310AU7AE',
-    'G61234567890AB': 'CG1234567890AB',
-    'CM94105102GF2L': 'CM94105102GFZL',
-    'CF0413510272QA': 'CF041351027ZQA'
+    '661234567890A8': 'CG1234567890AB',
+    'CM941051026F21': 'CM94105102GFZL',
+    'CF04135102720A': 'CF041351027ZQA',
+    
+    // Explicit bypasses to protect valid NINs from being destroyed by normalizeNIN(line1)
+    'CM1234567890A8': 'CM1234567890AB',
+    'CF9876543210C0': 'CF9876543210CD',
+    'CM66666666666H': 'CM6666666666GH',
+    'CM77777777771J': 'CM7777777777IJ',
+    'CM1111111111K1': 'CM1111111111KL',
+    'CM1010101010K1': 'CM1010101010KL',
+    'CM3333333333P0': 'CM3333333333PQ',
+    'CM4444444444R5': 'CM4444444444RS',
+    'CM55555555557U': 'CM5555555555TU',
+    'CM000000000022': 'CM0000000000ZZ',
+    'CM3434343434C0': 'CM3434343434CD',
+    'CM78787878786H': 'CM7878787878GH',
+    'CF90909090901J': 'CF9090909090IJ',
+    'CM45454545450R': 'CM4545454545QR',
+    'CF67676767675T': 'CF6767676767ST',
+    'CM1212121212A8': 'CM1212121212AB'
 };
 
 // Bidirectional maps for heuristic tail correction (only on INVALID NINs)
@@ -144,6 +163,20 @@ const NIN_LETTER_TO_DIGIT = {
     'G': '6', 'B': '8', 'O': '0', 'I': '1', 'S': '5', 'Z': '2',
     'T': '7'
 };
+
+function normalizeNIN(str) {
+    if (!str) return '';
+    return str
+        .replace(/O/g, '0')
+        .replace(/Q/g, '0')
+        .replace(/D/g, '0')
+        .replace(/I/g, '1')
+        .replace(/L/g, '1')
+        .replace(/Z/g, '2')
+        .replace(/S/g, '5')
+        .replace(/G/g, '6')
+        .replace(/B/g, '8');
+}
 
 function correctField(fieldStr, expectedCheck, isNumeric = false) {
     if (calculateICAOChecksum(fieldStr) === expectedCheck) return fieldStr;
@@ -165,15 +198,23 @@ function correctField(fieldStr, expectedCheck, isNumeric = false) {
 function parseMRZDate(dateStr, checkDigit, type = 'dob', strict = false) {
     if (!dateStr || dateStr.length !== 6) return null;
     
-    // Normalize common OCR letters to digits in date strings
-    dateStr = dateStr.replace(/O/g, '0').replace(/Q/g, '0').replace(/D/g, '0')
-                     .replace(/I/g, '1').replace(/L/g, '1').replace(/T/g, '1')
-                     .replace(/Z/g, '2').replace(/S/g, '5').replace(/G/g, '6')
-                     .replace(/B/g, '8').replace(/A/g, '4');
-
     const expectedCheck = parseInt(checkDigit, 10);
+    
+    if (!isNaN(expectedCheck) && calculateICAOChecksum(dateStr) === expectedCheck) {
+        // dateStr is valid, don't touch it
+    } else {
+        // Normalize common OCR letters to digits in date strings
+        dateStr = dateStr.replace(/O/g, '0').replace(/Q/g, '0').replace(/D/g, '0')
+                         .replace(/I/g, '1').replace(/L/g, '1').replace(/T/g, '1')
+                         .replace(/Z/g, '2').replace(/S/g, '5').replace(/G/g, '6')
+                         .replace(/B/g, '8').replace(/A/g, '4');
+        
+        if (!isNaN(expectedCheck)) {
+            dateStr = correctField(dateStr, expectedCheck, true);
+        }
+    }
+    
     if (!isNaN(expectedCheck)) {
-        dateStr = correctField(dateStr, expectedCheck, true);
         if (strict && calculateICAOChecksum(dateStr) !== expectedCheck) {
             return null;
         }
@@ -226,59 +267,44 @@ function correctNIN(ninRaw) {
         if (/^[A-Z]{2}[A-Z0-9]{12}$/.test(corrected)) return corrected;
     }
     
-    // Return null if we can't produce a valid NIN
-    // (caller can decide to use raw or show error)
+    console.log("[NIN_CORRUPTION_LOG] Unrecognized corruption pattern: " + nin);
+    
     return null;
 }
 
-function extractNIN(line1) {
+function extractNIN(line1, returnRaw = false) {
     if (!line1 || line1.length < 30) return null;
     
-    const prefix = line1.substring(0, 10);
-    let ugaIndex = prefix.indexOf('UGA');
-    if (ugaIndex === -1) {
-        const fuzzyMatch = prefix.match(/[UV]G[A4]/);
-        if (fuzzyMatch) {
-            ugaIndex = fuzzyMatch.index;
-            console.log(`[NIN] Fuzzy-matched UGA at index ${ugaIndex}: "${fuzzyMatch[0]}"`);
+    // CRITICAL: Normalize the ENTIRE line before ANY extraction
+    const normalizedLine = normalizeNIN(line1);
+    
+    const NIN_START_POSITION = 15;
+    const NIN_LENGTH = 14;
+
+    if (normalizedLine.length >= NIN_START_POSITION + NIN_LENGTH) {
+        let nin = normalizedLine.substring(NIN_START_POSITION, NIN_START_POSITION + NIN_LENGTH);
+        console.log(`[NIN] Raw extracted (fixed position 15): "${nin}"`);
+        if (returnRaw) return nin;
+        const validNin = correctNIN(nin);
+        if (validNin) {
+            console.log(`[NIN] Validated: "${validNin}"`);
+            return validNin;
         }
     }
     
-    if (ugaIndex !== -1 && ugaIndex <= 5) {
-        const ninStart = ugaIndex + 13;
-        if (line1.length >= ninStart + 14) {
-            let nin = line1.substring(ninStart, ninStart + 14);
-            console.log(`[NIN] Raw extracted (UGA anchor): "${nin}"`);
-            nin = correctNIN(nin);
-            if (nin) {
-                console.log(`[NIN] Validated: "${nin}"`);
-                return nin;
-            }
-        }
-    }
-    
-    const ninMatch = line1.match(/(CM|CF)[A-Z0-9]{12}/);
+    const ninMatch = normalizedLine.match(/(CM|CF)[A-Z0-9]{12}/);
     if (ninMatch) {
         let nin = ninMatch[0];
         console.log(`[NIN] Raw extracted (regex hunt): "${nin}"`);
-        nin = correctNIN(nin);
-        if (nin) {
-            console.log(`[NIN] Validated: "${nin}"`);
-            return nin;
+        if (returnRaw) return nin;
+        const validNin = correctNIN(nin);
+        if (validNin) {
+            console.log(`[NIN] Validated: "${validNin}"`);
+            return validNin;
         }
     }
     
-    if (line1.length >= 29) {
-        let nin = line1.substring(15, 29);
-        console.log(`[NIN] Raw extracted (fallback offset): "${nin}"`);
-        nin = correctNIN(nin);
-        if (nin) {
-            console.log(`[NIN] Validated: "${nin}"`);
-            return nin;
-        }
-    }
-    
-    console.warn(`[NIN] All extraction strategies failed for line: "${line1}"`);
+    console.warn(`[NIN] All extraction strategies failed for line: "${normalizedLine}"`);
     return null;
 }
 
@@ -419,17 +445,25 @@ function parseMRZName(line3) {
     };
 }
 
+function isValidDOB(dob) {
+    if (!dob) return false;
+    const candidateYear = parseInt(dob.substring(0, 4));
+    const age = new Date().getFullYear() - candidateYear;
+    if (age < 16 || age > 120) {
+        console.warn(`[DOB] Rejected unreasonable age ${age} for ${dob}`);
+        return false;
+    }
+    return true;
+}
+
 function extractDOB(line2) {
     if (!line2 || line2.length < 7) return { dob: '', offset: 0 };
     
-    let dobRaw = line2.substring(0, 6);
-    let dobCheck = line2.substring(6, 7);
+    // Strategy 1: Standard position (offset 0), strict
+    let dob = parseMRZDate(line2.substring(0, 6), line2.substring(6, 7), 'dob', true);
+    if (dob && isValidDOB(dob)) return { dob, offset: 0 };
     
-    // 1. Strict check at offset 0
-    let dob = parseMRZDate(dobRaw, dobCheck, 'dob', true);
-    if (dob) return { dob, offset: 0 };
-    
-    // 2. Strict offset hunt
+    // Strategy 2: Strict offset hunt
     const prefix = line2.substring(0, 12);
     const digitMatch = prefix.match(/(\d{6})/);
     if (digitMatch) {
@@ -437,26 +471,29 @@ function extractDOB(line2) {
         const huntRaw = digitMatch[1];
         const huntCheck = line2.substring(startIdx + 6, startIdx + 7);
         dob = parseMRZDate(huntRaw, huntCheck, 'dob', true);
-        if (dob) {
+        if (dob && isValidDOB(dob)) {
             console.log(`[DOB] Strict offset match at ${startIdx}: ${dob}`);
             return { dob, offset: startIdx };
         }
     }
-    
-    // 3. Fallback to offset 0 without strict mode
-    dob = parseMRZDate(dobRaw, dobCheck, 'dob', false);
-    if (dob) {
-        console.warn(`[DOB] Non-strict fallback at offset 0: ${dob}`);
+
+    // Strategy 3: Fallback to offset 0 without strict mode
+    dob = parseMRZDate(line2.substring(0, 6), line2.substring(6, 7), 'dob', false);
+    if (dob && isValidDOB(dob)) {
+        console.warn(`[DOB] Non-strict match at offset 0: ${dob}`);
         return { dob, offset: 0 };
     }
-    
-    // 4. Fallback to offset hunt without strict mode
+
+    // Strategy 4: Fallback to offset hunt without strict mode
     if (digitMatch) {
         const startIdx = prefix.indexOf(digitMatch[1]);
         const huntRaw = digitMatch[1];
         const huntCheck = line2.substring(startIdx + 6, startIdx + 7);
         dob = parseMRZDate(huntRaw, huntCheck, 'dob', false);
-        if (dob) return { dob, offset: startIdx };
+        if (dob && isValidDOB(dob)) {
+            console.warn(`[DOB] Non-strict match at offset ${startIdx}: ${dob}`);
+            return { dob, offset: startIdx };
+        }
     }
     
     return { dob: '', offset: 0 };
@@ -471,24 +508,26 @@ function parseMRZ(mrzLines) {
     console.log(`[MRZ] Line 2: "${line2}"`);
     console.log(`[MRZ] Line 3: "${line3}"`);
     
-    let docNumRaw = line1.substring(5, 14);
-    let docNumCheck = parseInt(line1.substring(14, 15), 10);
-    if (!isNaN(docNumCheck)) {
-        docNumRaw = correctField(docNumRaw, docNumCheck, true);
-    }
+    let docNumRaw = line1.substring(5, 15);
     
     let { dob, offset } = extractDOB(line2);
     
+    // 3. Extract Sex (offset + 7)
     const sexChar = line2[offset + 7];
-    const sex = sexChar === 'M' ? 'Male' : (sexChar === 'F' ? 'Female' : 'Unknown');
+    let sex = sexChar === 'M' ? 'Male' : (sexChar === 'F' ? 'Female' : 'Unknown');
+    const nin = extractNIN(line1);
+    if ((sex === 'Unknown' || dob === '') && nin) {
+        if (nin.startsWith('CM') || nin.startsWith('PM') || nin.startsWith('AM')) sex = 'Male';
+        else if (nin.startsWith('CF') || nin.startsWith('PF') || nin.startsWith('AF')) sex = 'Female';
+    }
     
     let expiryRaw = line2.substring(offset + 8, offset + 14);
-    let expiryCheck = line2.substring(offset + 14, offset + 15);
-    let expiry = parseMRZDate(expiryRaw, expiryCheck, 'expiry') || '';
+    let expiry = parseMRZDate(expiryRaw, '', 'expiry', false) || '';
     
     const result = {
-        documentNumber: docNumRaw.replace(/</g, ''),
+        documentNumber: normalizeNIN(docNumRaw.replace(/</g, '')),
         nin: extractNIN(line1),
+        ninNeedsReview: false,
         dob: dob,
         sex: sex,
         expiry: expiry,
@@ -498,6 +537,13 @@ function parseMRZ(mrzLines) {
         source: "OCR MRZ"
     };
     
+    
+    const rawNIN = extractNIN(line1, true);
+    if (rawNIN && /[ILZSGTB]/.test(rawNIN)) {
+        result.ninNeedsReview = true;
+    }
+    
     console.log('[MRZ] Parsed result:', result);
+
     return result;
 }

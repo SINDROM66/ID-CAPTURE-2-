@@ -1,6 +1,3 @@
-
-
-
 const fileInputCamera = document.getElementById('input-camera');
 const fileInputGallery = document.getElementById('input-gallery');
 const triggerBtn = document.getElementById('trigger-upload');
@@ -20,21 +17,21 @@ const cardUploadView = document.getElementById('card-barcode-upload');
 const cardProgressView = document.getElementById('card-progress');
 const cardFormView = document.getElementById('card-form');
 
+// Keep reference to processed canvas so parseUgandaID can use deskew fallback
+let lastProcessedCanvas = null;
+
 function initScanner() {
     
-    // Open modal on trigger click
     triggerBtn.addEventListener('click', () => {
         photoModal.classList.remove('hidden');
     });
     
-    // Also trigger on zone click
     uploadZone.addEventListener('click', (e) => {
         if(e.target !== triggerBtn) {
             photoModal.classList.remove('hidden');
         }
     });
 
-    // Modal Actions
     btnCamera.addEventListener('click', () => {
         photoModal.classList.add('hidden');
         fileInputCamera.click();
@@ -49,14 +46,12 @@ function initScanner() {
         photoModal.classList.add('hidden');
     });
 
-    // Close modal if clicking outside content
     photoModal.addEventListener('click', (e) => {
         if (e.target === photoModal) {
             photoModal.classList.add('hidden');
         }
     });
 
-    // Bind both inputs to the same handler
     fileInputCamera.addEventListener('change', handleFileSelect);
     fileInputGallery.addEventListener('change', handleFileSelect);
     
@@ -64,25 +59,20 @@ function initScanner() {
     resetBtn.addEventListener('click', resetScanner);
 }
 
-// -----------------------------------------------------------------------------
-// MOBILE IMAGE PREPROCESSING PIPELINE
-// -----------------------------------------------------------------------------
-
-// EXIF Parser and Rotator (Fallback for older browsers)
 async function fixOrientation(file, img) {
     const getOrientation = async (file) => {
         const buf = await file.slice(0, 65536).arrayBuffer();
         const view = new DataView(buf);
-        if (view.getUint16(0, false) !== 0xFFD8) return 1; // Not JPEG
+        if (view.getUint16(0, false) !== 0xFFD8) return 1;
         
         let offset = 2;
         while (offset < view.byteLength) {
             const marker = view.getUint16(offset, false);
-            if (marker === 0xFFD9) break; // End of image
+            if (marker === 0xFFD9) break;
             
             if ((marker & 0xFF00) !== 0xFF00) { offset += 2; continue; }
             
-            if (marker === 0xFFE1) { // APP1 (EXIF)
+            if (marker === 0xFFE1) {
                 const segLen = view.getUint16(offset + 2, false);
                 const seg = new Uint8Array(buf, offset + 4, segLen - 2);
                 const head = String.fromCharCode(...seg.slice(0, 6));
@@ -104,8 +94,15 @@ async function fixOrientation(file, img) {
         return 1;
     };
 
-    const orientation = await getOrientation(file);
-    if (orientation <= 1) return img; // No rotation needed
+    let orientation = 1;
+    try {
+        orientation = await getOrientation(file);
+    } catch (exifErr) {
+        console.warn("[Upload] EXIF parsing failed, assuming no rotation.", exifErr);
+    }
+    
+    if (orientation <= 1) { img.exifOrientation = orientation; return img; }
+
     console.log(`[Upload] EXIF Orientation detected: ${orientation}. Rotating canvas.`);
 
     const canvas = document.createElement("canvas");
@@ -124,40 +121,32 @@ async function fixOrientation(file, img) {
         case 2: ctx.translate(canvas.width, 0); ctx.scale(-1, 1); break;
         case 3: ctx.translate(canvas.width, canvas.height); ctx.rotate(Math.PI); break;
         case 4: ctx.translate(0, canvas.height); ctx.scale(1, -1); break;
-        case 5: 
-            ctx.translate(canvas.width / 2, canvas.height / 2);
-            ctx.rotate(0.5 * Math.PI); 
-            ctx.scale(1, -1); 
+        case 5:
+            ctx.translate(canvas.width, 0);
+            ctx.rotate(0.5 * Math.PI);
+            ctx.scale(1, -1);
             break;
-        case 6: 
-            ctx.translate(canvas.width / 2, canvas.height / 2);
-            ctx.rotate(0.5 * Math.PI); 
-            ctx.translate(0, -canvas.width); 
+        case 6:
+            ctx.translate(canvas.width, 0);
+            ctx.rotate(0.5 * Math.PI);
             break;
-        case 7: 
-            ctx.translate(canvas.width / 2, canvas.height / 2);
-            ctx.rotate(0.5 * Math.PI); 
-            ctx.translate(canvas.height, -canvas.width); 
-            ctx.scale(-1, 1); 
+        case 7:
+            ctx.translate(0, canvas.height);
+            ctx.rotate(-0.5 * Math.PI);
+            ctx.scale(1, -1);
             break;
-        case 8: 
-            ctx.translate(canvas.width / 2, canvas.height / 2);
-            ctx.rotate(-0.5 * Math.PI); 
-            ctx.translate(-canvas.height, 0); 
+        case 8:
+            ctx.translate(0, canvas.height);
+            ctx.rotate(-0.5 * Math.PI);
             break;
     }
-    // CRITICAL FIX: Draw relative to center for rotated orientations
-    if (orientation >= 5) {
-        ctx.drawImage(img, -img.width / 2, -img.height / 2);
-    } else {
-        ctx.drawImage(img, 0, 0);
-    }
+    ctx.drawImage(img, 0, 0);
     ctx.restore();
     
+    canvas.exifOrientation = orientation;
     return canvas;
 }
 
-// HEIC Converter
 async function convertHeicToJpeg(file) {
     if (!file.type.includes("heic") && !file.name.toLowerCase().endsWith(".heic")) return file;
     
@@ -177,82 +166,8 @@ async function convertHeicToJpeg(file) {
     }
 }
 
-// OCR Preprocessing: Fast Adaptive Local Thresholding using Integral Image
-function adaptiveThresholding(canvas) {
-    const ctx = canvas.getContext("2d");
-    const width = canvas.width;
-    const height = canvas.height;
-    const imgData = ctx.getImageData(0, 0, width, height);
-    const data = imgData.data;
-    
-    // 1. Grayscale pass
-    const grays = new Uint8Array(width * height);
-    for (let i = 0; i < width * height; i++) {
-        const idx = i * 4;
-        grays[i] = 0.299 * data[idx] + 0.587 * data[idx+1] + 0.114 * data[idx+2];
-    }
-    
-    // 2. Integral Image for O(1) local mean
-    const integral = new Uint32Array(width * height);
-    for (let y = 0; y < height; y++) {
-        let rowSum = 0;
-        for (let x = 0; x < width; x++) {
-            rowSum += grays[y * width + x];
-            integral[y * width + x] = rowSum + (y > 0 ? integral[(y - 1) * width + x] : 0);
-        }
-    }
-    
-    // 3. Adaptive Thresholding
-    const s = Math.floor(width / 16); // Dynamic window ~1/16th of width
-    const s2 = Math.floor(s / 2);
-    const C = 15; // Noise offset
-    
-    for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-            const x1 = Math.max(x - s2, 0);
-            const y1 = Math.max(y - s2, 0);
-            const x2 = Math.min(x + s2, width - 1);
-            const y2 = Math.min(y + s2, height - 1);
-            const count = (x2 - x1 + 1) * (y2 - y1 + 1);
-            
-            const a = (x1 > 0 && y1 > 0) ? integral[(y1 - 1) * width + (x1 - 1)] : 0;
-            const b = (y1 > 0) ? integral[(y1 - 1) * width + x2] : 0;
-            const c = (x1 > 0) ? integral[y2 * width + (x1 - 1)] : 0;
-            const d = integral[y2 * width + x2];
-            
-            const mean = (d - b - c + a) / count;
-            const val = (grays[y * width + x] < mean - C) ? 0 : 255;
-            
-            const idx = (y * width + x) * 4;
-            data[idx] = data[idx+1] = data[idx+2] = val; // RGB
-        }
-    }
-    
-    ctx.putImageData(imgData, 0, 0);
-    return canvas;
-}
 
-// We no longer crop to the MRZ, as it fails on complex backgrounds (e.g., fingers, desks).
-// Instead, we pass the whole ID card to Tesseract and let our robust extractMRZ scoring window find the MRZ.
-function cropMRZRegion(canvas) {
-    const MAX_DIM = 1200;
-    
-    if (canvas.width > MAX_DIM || canvas.height > MAX_DIM) {
-        const scale = Math.min(MAX_DIM / canvas.width, MAX_DIM / canvas.height);
-        const scaledCanvas = document.createElement('canvas');
-        scaledCanvas.width = Math.round(canvas.width * scale);
-        scaledCanvas.height = Math.round(canvas.height * scale);
-        const sCtx = scaledCanvas.getContext('2d');
-        sCtx.drawImage(canvas, 0, 0, scaledCanvas.width, scaledCanvas.height);
-        console.log(`[Crop] Passed whole image (downscaled to: ${scaledCanvas.width}x${scaledCanvas.height})`);
-        return scaledCanvas;
-    }
-    
-    console.log(`[Crop] Passed whole image (original size: ${canvas.width}x${canvas.height})`);
-    return canvas;
-}
 
-// Main File Handler
 async function handleFileSelect(e) {
     let file = e.target.files[0];
     if (!file) return;
@@ -261,41 +176,41 @@ async function handleFileSelect(e) {
     console.log(`[Upload] Starting process for: ${file.name || 'unknown'}, type: ${file.type || 'unknown'}, size: ${file.size}`);
 
     try {
-        // Handle Mobile Blob quirks
         file = new File([file], file.name || "upload.jpg", { type: file.type || "image/jpeg" });
         
-        // 1. Convert HEIC if needed
         file = await convertHeicToJpeg(file);
         
         let imageSource = null;
         
-        // 2. Try modern createImageBitmap with EXIF parsing
-        try {
-            imageSource = await createImageBitmap(file, { imageOrientation: "from-image" });
-            console.log("[Upload] createImageBitmap with from-image succeeded.");
-        } catch (err) {
-            // Fallback for older browsers
-            console.warn("[Upload] createImageBitmap failed. Falling back to manual EXIF parser.");
-            imageSource = await new Promise((resolve, reject) => {
-                const img = new Image();
-                const url = URL.createObjectURL(file);
-                img.onload = () => {
-                    URL.revokeObjectURL(url); // Prevent memory leak
-                    resolve(img);
-                };
-                img.onerror = () => {
-                    URL.revokeObjectURL(url);
-                    reject(new Error("Failed to load image"));
-                };
-                img.src = url;
-            });
-            // Manual EXIF parsing and rotation
-            imageSource = await fixOrientation(file, imageSource);
-        }
+        imageSource = await new Promise((resolve, reject) => {
+            const img = new Image();
+            const url = URL.createObjectURL(file);
+            img.onload = () => {
+                URL.revokeObjectURL(url);
+                resolve(img);
+            };
+            img.onerror = () => {
+                URL.revokeObjectURL(url);
+                reject(new Error("Failed to load image"));
+            };
+            img.src = url;
+        });
+        imageSource = await fixOrientation(file, imageSource);
         
+        if (imageSource.height > imageSource.width * 1.2) {
+            const rotated = document.createElement('canvas');
+            rotated.width = imageSource.height;
+            rotated.height = imageSource.width;
+            const rCtx = rotated.getContext('2d');
+            rCtx.translate(rotated.width, 0);
+            rCtx.rotate(0.5 * Math.PI);
+            rCtx.drawImage(imageSource, 0, 0);
+            imageSource = rotated;
+            console.log(`[Upload] Rotated portrait image to landscape`);
+        }
+
         console.log(`[Upload] Source dimensions: ${imageSource.width}x${imageSource.height}`);
         
-        // 3. Smart Resize
         const MAX_DIMENSION = 1500;
         let width = imageSource.width;
         let height = imageSource.height;
@@ -312,20 +227,53 @@ async function handleFileSelect(e) {
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(imageSource, 0, 0, width, height);
+
         
-        // 4. Crop MRZ Region
-        canvas = cropMRZRegion(canvas);
         
-        // 5. Adaptive Thresholding
-        canvas = adaptiveThresholding(canvas);
-        console.log("[Upload] Applied adaptive thresholding and cropping.");
+        // Step 1: Remove black bars
+        const ctxFull = canvas.getContext('2d');
+        const imgDataFull = ctxFull.getImageData(0, 0, canvas.width, canvas.height);
+        const rowMeans = [];
+        for (let y = 0; y < canvas.height; y++) {
+            let sum = 0;
+            for (let x = 0; x < canvas.width; x++) {
+                const idx = (y * canvas.width + x) * 4;
+                sum += 0.299 * imgDataFull.data[idx] + 0.587 * imgDataFull.data[idx+1] + 0.114 * imgDataFull.data[idx+2];
+            }
+            rowMeans.push(sum / canvas.width);
+        }
+        let topCrop = 0, bottomCrop = canvas.height - 1;
+        while (topCrop < canvas.height && rowMeans[topCrop] < 30) topCrop++;
+        while (bottomCrop >= 0 && rowMeans[bottomCrop] < 30) bottomCrop--;
+        if (bottomCrop > topCrop) {
+            const croppedCanvas = document.createElement('canvas');
+            croppedCanvas.width = canvas.width;
+            croppedCanvas.height = bottomCrop - topCrop + 1;
+            croppedCanvas.getContext('2d').drawImage(canvas, 0, topCrop, canvas.width, bottomCrop - topCrop + 1, 0, 0, canvas.width, bottomCrop - topCrop + 1);
+            canvas = croppedCanvas;
+        }
+
+        // Step 2: Convert to grayscale and upscale 2x
+        const grayCanvas = document.createElement('canvas');
+        grayCanvas.width = canvas.width * 2;
+        grayCanvas.height = canvas.height * 2;
+        const gCtx = grayCanvas.getContext('2d');
+        gCtx.filter = 'grayscale(100%) contrast(150%) brightness(110%)';
+        gCtx.drawImage(canvas, 0, 0, grayCanvas.width, grayCanvas.height);
         
-        // Render
+        // Store for OCR
+        canvas = grayCanvas;
+        console.log("[Upload] Applied upscale and grayscale.");
+        
+        // Store canvas for extraction (enables deskew fallback in parseUgandaID)
+        lastProcessedCanvas = canvas;
+        
         const finalDataUrl = canvas.toDataURL('image/jpeg', 0.85);
         
         imagePreview.onload = () => {
             previewContainer.classList.remove('hidden');
             uploadZone.classList.add('hidden');
+            document.getElementById('id-frame-overlay').style.display = 'none';
             extractBtn.disabled = false;
         };
         imagePreview.src = finalDataUrl;
@@ -338,31 +286,34 @@ async function handleFileSelect(e) {
 }
 
 async function handleExtraction() {
-    if (!imagePreview.src) return;
+    if (!lastProcessedCanvas) return;
 
-    // Show Progress
     cardUploadView.classList.add('hidden');
     cardProgressView.classList.remove('hidden');
     errorText.classList.add('hidden');
 
     try {
-        // Wait a tiny bit for the UI to update
         await new Promise(r => setTimeout(r, 100));
 
-        // Use our new Tesseract.js OCR pipeline to extract data
-        const parsedRecord = await parseUgandaID(imagePreview);
+        // Pass the actual canvas so deskew fallback (HTMLCanvasElement check) works
+        const parsedRecord = await parseUgandaID(lastProcessedCanvas);
         
-        // Transition to Form and pre-fill data
         populateForm(parsedRecord);
         cardProgressView.classList.add('hidden');
         cardFormView.classList.remove('hidden');
         
     } catch (err) {
         console.error(err);
-        // If decoding fails, go back and show error
         cardProgressView.classList.add('hidden');
         cardUploadView.classList.remove('hidden');
         errorText.textContent = "Failed to detect or parse MRZ text. Please ensure the image is clear and try again. (" + err.message + ")";
+        
+        const retakeBtn = document.createElement('button');
+        retakeBtn.textContent = 'Retake Photo';
+        retakeBtn.className = 'retake-btn';
+        retakeBtn.addEventListener('click', resetScanner);
+        errorText.appendChild(retakeBtn);
+        
         errorText.classList.remove('hidden');
     }
 }
@@ -373,9 +324,11 @@ function resetScanner() {
     imagePreview.src = '';
     previewContainer.classList.add('hidden');
     uploadZone.classList.remove('hidden');
+    document.getElementById('id-frame-overlay').style.display = 'block';
     extractBtn.disabled = true;
     errorText.classList.add('hidden');
     errorText.textContent = '';
+    lastProcessedCanvas = null;
 }
 
 function showScannerView() {
@@ -388,8 +341,6 @@ function showScannerView() {
 function populateForm(record) {
     document.getElementById('surname').value = record.surname || '';
     document.getElementById('givenName').value = record.givenName || '';
-    // Only clear otherName if parser explicitly returned empty string
-    // (New IDs don't have other names in MRZ, old ones don't either)
     document.getElementById('otherName').value = record.otherName || '';
     document.getElementById('dob').value = record.dob || '';
     
@@ -401,6 +352,16 @@ function populateForm(record) {
     
     document.getElementById('nationality').value = record.nationality || 'UGA';
     document.getElementById('nin').value = record.nin || '';
-    document.getElementById('phone').value = '';
-}
 
+    const ninWarning = document.getElementById('nin-warning');
+    if (ninWarning) {
+        if (record.ninNeedsReview) {
+            ninWarning.textContent = '⚠️ NIN contains characters that may be OCR errors. Please verify.';
+            ninWarning.classList.remove('hidden');
+        } else {
+            ninWarning.classList.add('hidden');
+        }
+    }
+    // Preserve manually-entered phone number on re-scan
+    // (Form reset on Save/Discard clears it; re-scanning alone won't)
+}
