@@ -166,7 +166,61 @@ async function convertHeicToJpeg(file) {
     }
 }
 
-
+function adaptiveThresholding(canvas) {
+    const ctx = canvas.getContext("2d");
+    const width = canvas.width;
+    const height = canvas.height;
+    const imgData = ctx.getImageData(0, 0, width, height);
+    const data = imgData.data;
+    
+    // Convert to grayscale array
+    const grays = new Uint8Array(width * height);
+    for (let i = 0; i < width * height; i++) {
+        const idx = i * 4;
+        grays[i] = 0.299 * data[idx] + 0.587 * data[idx+1] + 0.114 * data[idx+2];
+    }
+    
+    // Build integral image for fast local mean calculation
+    const integral = new Uint32Array(width * height);
+    for (let y = 0; y < height; y++) {
+        let rowSum = 0;
+        for (let x = 0; x < width; x++) {
+            rowSum += grays[y * width + x];
+            integral[y * width + x] = rowSum + (y > 0 ? integral[(y - 1) * width + x] : 0);
+        }
+    }
+    
+    // IMPROVED parameters for MRZ text:
+    // Smaller window = sharper character edges
+    // Lower C value = less aggressive thresholding (preserves thin lines)
+    const s = Math.max(10, Math.floor(Math.min(width, height) / 40));
+    const s2 = Math.floor(s / 2);
+    const C = 12;  // Was 15 — reduced to preserve thin MRZ strokes
+    
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const x1 = Math.max(x - s2, 0);
+            const y1 = Math.max(y - s2, 0);
+            const x2 = Math.min(x + s2, width - 1);
+            const y2 = Math.min(y + s2, height - 1);
+            const count = (x2 - x1 + 1) * (y2 - y1 + 1);
+            
+            const a = (x1 > 0 && y1 > 0) ? integral[(y1 - 1) * width + (x1 - 1)] : 0;
+            const b = (y1 > 0) ? integral[(y1 - 1) * width + x2] : 0;
+            const c = (x1 > 0) ? integral[y2 * width + (x1 - 1)] : 0;
+            const d = integral[y2 * width + x2];
+            
+            const mean = (d - b - c + a) / count;
+            const val = (grays[y * width + x] < mean - C) ? 0 : 255;
+            
+            const idx = (y * width + x) * 4;
+            data[idx] = data[idx+1] = data[idx+2] = val;
+        }
+    }
+    
+    ctx.putImageData(imgData, 0, 0);
+    return canvas;
+}
 
 async function handleFileSelect(e) {
     let file = e.target.files[0];
@@ -242,17 +296,17 @@ async function handleFileSelect(e) {
             canvas = croppedCanvas;
         }
 
-        // Step 2: Convert to grayscale and upscale 2x
-        const grayCanvas = document.createElement('canvas');
-        grayCanvas.width = canvas.width * 2;
-        grayCanvas.height = canvas.height * 2;
-        const gCtx = grayCanvas.getContext('2d');
-        gCtx.filter = 'grayscale(100%) contrast(150%) brightness(110%)';
-        gCtx.drawImage(canvas, 0, 0, grayCanvas.width, grayCanvas.height);
+        // Step 2: Upscale 2x first, then apply adaptive thresholding
+        const scaledCanvas = document.createElement('canvas');
+        scaledCanvas.width = canvas.width * 2;
+        scaledCanvas.height = canvas.height * 2;
+        const sCtx = scaledCanvas.getContext('2d');
+        sCtx.drawImage(canvas, 0, 0, scaledCanvas.width, scaledCanvas.height);
         
-        // Store for OCR
-        canvas = grayCanvas;
-        console.log("[Upload] Applied upscale and grayscale.");
+        // Apply adaptive thresholding for clean black/white text
+        adaptiveThresholding(scaledCanvas);
+        canvas = scaledCanvas;
+        console.log("[Upload] Applied adaptive thresholding and upscale.");
         
         // Store canvas for extraction (enables deskew fallback in parseUgandaID)
         lastProcessedCanvas = canvas;
