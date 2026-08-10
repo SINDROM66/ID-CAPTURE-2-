@@ -410,33 +410,66 @@ function parseMRZName(line3) {
         return { surname: '', givenName: '', otherName: '' };
     }
     
-    let parts = line3.split('<<');
+    // Strip trailing noise to make end-of-string matching reliable
+    const cleanLine3 = line3.replace(/[<KLCS]+$/, '');
     
-    // If the first part contains '<', the '<<' separator was corrupted or missing
-    if (parts.length > 0 && parts[0].includes('<')) {
-        const firstLess = line3.indexOf('<');
-        let s = line3.substring(0, firstLess);
-        let g = line3.substring(firstLess + 1);
+    let parts = cleanLine3.split('<<');
+    
+    let surname = '';
+    let givenNameStr = '';
+    
+    // If the standard '<<' separator was corrupted or missing
+    if (parts.length === 1) {
+        let tempStr = cleanLine3;
+        let foundAny = false;
         
-        // Trim common OCR artifact K/L/C/S from the end of the surname
-        if (s.length > 4 && /[KLCS]$/.test(s)) {
-            s = s.substring(0, s.length - 1);
+        // Sort names by length descending to match longest (e.g. MELLISA KIRABO) first
+        const sortedNames = Array.from(COMMON_FIRST_NAMES).sort((a,b) => b.length - a.length);
+        
+        while (true) {
+            let foundInIteration = false;
+            for (const name of sortedNames) {
+                // Look for the name preceded by OCR artifacts (K, L, C, S, <)
+                // e.g. MUYUNGAKKTIMOTHY -> MUYUNGA + KK + TIMOTHY
+                const regex = new RegExp(`[<KLCS]+(${name})$`);
+                const match = tempStr.match(regex);
+                if (match) {
+                    tempStr = tempStr.substring(0, match.index);
+                    givenNameStr = givenNameStr ? match[1] + '<' + givenNameStr : match[1];
+                    foundInIteration = true;
+                    foundAny = true;
+                    break;
+                }
+            }
+            if (!foundInIteration) break;
         }
         
-        parts = [s, g];
+        surname = tempStr;
+        
+        if (!foundAny) {
+            // Fallback: split on first < if it exists
+            const firstLess = cleanLine3.indexOf('<');
+            if (firstLess !== -1) {
+                surname = cleanLine3.substring(0, firstLess);
+                givenNameStr = cleanLine3.substring(firstLess + 1);
+            } else {
+                surname = cleanLine3;
+            }
+        }
+    } else {
+        surname = parts[0];
+        givenNameStr = parts.slice(1).join('<<');
     }
     
-    const surname = (parts[0] || '').replace(/</g, '').trim();
+    surname = surname.replace(/[<KLCS]+$/, '').trim();
     
-    let givenName = '';
+    let finalGivenName = '';
     
-    if (parts.length > 1) {
-        const namePart = parts.slice(1).join('<<');
-        
+    if (givenNameStr) {
         // 1. Split on < separators
         // 2. Remove single-char noise (OCR reads < as L, I)
         // 3. Remove pure consonant garbage (KLLLKL, BRRR)
-        let names = namePart.split('<')
+        let names = givenNameStr.split('<')
             .map(n => n.trim())
             .filter(n => n.length > 1)
             .filter(n => /[AEIOUY]/i.test(n));
@@ -456,12 +489,17 @@ function parseMRZName(line3) {
         // 6. Fix merged names (missing < separator)
         names = names.map(n => splitMergedNames(n));
         
-        givenName = names.join(' ');
+        // Rescue perfectly matched names that might have bypassed consonant filters accidentally
+        if (names.length === 0 && givenNameStr.length > 2) {
+             names = [givenNameStr];
+        }
+        
+        finalGivenName = names.join(' ');
     }
     
     return {
         surname: surname,
-        givenName: givenName,
+        givenName: finalGivenName,
         otherName: ''
     };
 }
