@@ -296,28 +296,13 @@ async function handleFileSelect(e) {
             canvas = croppedCanvas;
         }
 
-        // Step 2: Crop to MRZ region (bottom 35% where the MRZ strip lives)
-        // This removes distracting card background/photos and focuses Tesseract
-        const MRZ_REGION_RATIO = 0.35;
-        const mrzHeight = Math.round(canvas.height * MRZ_REGION_RATIO);
-        const mrzCanvas = document.createElement('canvas');
-        mrzCanvas.width = canvas.width;
-        mrzCanvas.height = mrzHeight;
-        mrzCanvas.getContext('2d').drawImage(
-            canvas,
-            0, canvas.height - mrzHeight, canvas.width, mrzHeight,  // source: bottom portion
-            0, 0, canvas.width, mrzHeight                           // dest: full canvas
-        );
-        canvas = mrzCanvas;
-        console.log(`[Upload] Cropped to MRZ region: ${canvas.width}x${canvas.height} (bottom ${Math.round(MRZ_REGION_RATIO * 100)}%)`);
-
         // Step 3: Upscale 2x for sharper character edges
         const scaledCanvas = document.createElement('canvas');
         scaledCanvas.width = canvas.width * 2;
         scaledCanvas.height = canvas.height * 2;
         const sCtx = scaledCanvas.getContext('2d');
         sCtx.drawImage(canvas, 0, 0, scaledCanvas.width, scaledCanvas.height);
-        
+
         // Apply adaptive thresholding for clean black/white text
         adaptiveThresholding(scaledCanvas);
         canvas = scaledCanvas;
@@ -331,7 +316,6 @@ async function handleFileSelect(e) {
         imagePreview.onload = () => {
             previewContainer.classList.remove('hidden');
             uploadZone.classList.add('hidden');
-            document.getElementById('id-frame-overlay').style.display = 'none';
             extractBtn.disabled = false;
         };
         imagePreview.src = finalDataUrl;
@@ -382,7 +366,6 @@ function resetScanner() {
     imagePreview.src = '';
     previewContainer.classList.add('hidden');
     uploadZone.classList.remove('hidden');
-    document.getElementById('id-frame-overlay').style.display = 'block';
     extractBtn.disabled = true;
     errorText.classList.add('hidden');
     errorText.textContent = '';
