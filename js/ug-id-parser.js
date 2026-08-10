@@ -18,47 +18,67 @@ async function parseUgandaID(image) {
     });
 
     try {
-        console.log("Starting OCR Pass 1 (psm: 6)...");
-        await worker.setParameters({ tessedit_pageseg_mode: 6 });
+        // PASS 1: PSM 6 (uniform block of text)
+        await worker.setParameters({
+            tessedit_pageseg_mode: 6,
+            preserve_interword_spaces: '1',
+            tessedit_enable_dict_correction: '0',
+            textord_heavy_nr: '1'
+        });
+        
         let result1 = await worker.recognize(image);
-        console.log("RAW OCR TEXT: " + result1.data.text);
+        console.log("RAW OCR:", result1.data.text);
+        console.log("Confidence:", result1.data.confidence);
         let mrzData = extractMRZ(result1.data.text);
 
-        if (!mrzData) {
-            console.log("Pass 1 failed, retrying with Pass 2 (psm: 4)...");
-            await worker.setParameters({ tessedit_pageseg_mode: 4 });
-            let result2 = await worker.recognize(image);
-            mrzData = extractMRZ(result2.data.text);
-        }
-
-        if (!mrzData) {
-            console.log("Pass 2 failed, retrying with Pass 3 (psm: 3)...");
-            await worker.setParameters({ tessedit_pageseg_mode: 3 });
-            let result3 = await worker.recognize(image);
-            mrzData = extractMRZ(result3.data.text);
-        }
-
-        if (!mrzData && (image.nodeName === 'CANVAS' || image instanceof HTMLCanvasElement)) {
-            console.warn("Standard OCR passes failed. Attempting deskew fallback (-2°, +2°)...");
-            const angles = [-2, 2, 90, -90, 180];
-            for (let angle of angles) {
-                console.log(`Testing rotation: ${angle}°`);
-                const rotatedCanvas = document.createElement('canvas');
-                rotatedCanvas.width = image.width;
-                rotatedCanvas.height = image.height;
-                const ctx = rotatedCanvas.getContext('2d');
-                ctx.translate(image.width / 2, image.height / 2);
-                ctx.rotate(angle * Math.PI / 180);
-                ctx.drawImage(image, -image.width / 2, -image.height / 2);
+        // PASS 2: Low confidence → line-by-line PSM 7
+        if (mrzData && result1.data.confidence < 75 && image.nodeName === 'CANVAS') {
+            console.log("Low confidence. Trying PSM 7 line-by-line...");
+            const h = Math.floor(image.height / 3);
+            const lineCanvas = document.createElement('canvas');
+            lineCanvas.width = image.width;
+            lineCanvas.height = h;
+            const lCtx = lineCanvas.getContext('2d');
+            
+            const lines = [];
+            for (let i = 0; i < 3; i++) {
+                lCtx.clearRect(0, 0, lineCanvas.width, lineCanvas.height);
+                lCtx.drawImage(image, 0, i * h, image.width, h, 0, 0, image.width, h);
                 
-                await worker.setParameters({ tessedit_pageseg_mode: 6 });
-                let rotResult = await worker.recognize(rotatedCanvas);
-                mrzData = extractMRZ(rotResult.data.text);
-                if (mrzData) {
-                    console.log(`MRZ found after rotating ${angle}°!`);
-                    break;
-                }
+                await worker.setParameters({
+                    tessedit_pageseg_mode: 7,
+                    preserve_interword_spaces: '1',
+                    tessedit_enable_dict_correction: '0'
+                });
+                const lineResult = await worker.recognize(lineCanvas);
+                lines.push(lineResult.data.text.trim());
+                console.log(`Line ${i+1}: "${lineResult.data.text.trim()}" (conf: ${lineResult.data.confidence})`);
             }
+            
+            const combinedText = lines.join('\n');
+            const lineMRZ = extractMRZ(combinedText);
+            if (lineMRZ) {
+                console.log("Line-by-line fallback succeeded!");
+                mrzData = lineMRZ;
+            }
+        }
+
+        // PASS 3: PSM 4 fallback
+        if (!mrzData) {
+            await worker.setParameters({
+                tessedit_pageseg_mode: 4,
+                preserve_interword_spaces: '1',
+                tessedit_enable_dict_correction: '0'
+            });
+            const r2 = await worker.recognize(image);
+            mrzData = extractMRZ(r2.data.text);
+        }
+
+        // PASS 4: PSM 3 fallback
+        if (!mrzData) {
+            await worker.setParameters({ tessedit_pageseg_mode: 3 });
+            const r3 = await worker.recognize(image);
+            mrzData = extractMRZ(r3.data.text);
         }
 
         if (!mrzData) {
