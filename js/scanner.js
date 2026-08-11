@@ -397,17 +397,32 @@ function showCropUI(canvas, suggestedRegion) {
     cropTopY = topY;
     cropBottomY = bottomY;
     
-    const topLine = container.querySelector('.crop-line-top');
-    const bottomLine = container.querySelector('.crop-line-bottom');
-    const topHandle = container.querySelector('.crop-handle-top');
-    const bottomHandle = container.querySelector('.crop-handle-bottom');
+    let topLine = container.querySelector('.crop-line-top');
+    let bottomLine = container.querySelector('.crop-line-bottom');
+    let topHandle = container.querySelector('.crop-handle-top');
+    let bottomHandle = container.querySelector('.crop-handle-bottom');
+    
+    const newTopLine = topLine.cloneNode(true);
+    const newBotLine = bottomLine.cloneNode(true);
+    const newTopHandle = topHandle.cloneNode(true);
+    const newBotHandle = bottomHandle.cloneNode(true);
+    topLine.parentNode.replaceChild(newTopLine, topLine);
+    bottomLine.parentNode.replaceChild(newBotLine, bottomLine);
+    topHandle.parentNode.replaceChild(newTopHandle, topHandle);
+    bottomHandle.parentNode.replaceChild(newBotHandle, bottomHandle);
+    
+    topLine = container.querySelector('.crop-line-top');
+    bottomLine = container.querySelector('.crop-line-bottom');
+    topHandle = container.querySelector('.crop-handle-top');
+    bottomHandle = container.querySelector('.crop-handle-bottom');
     
     function updateLines() {
         const h = img.naturalHeight || img.clientHeight || height;
-        topLine.style.top = (cropTopY / height * 100) + '%';
-        bottomLine.style.top = (cropBottomY / height * 100) + '%';
-        topHandle.style.top = (cropTopY / height * 100) + '%';
-        bottomHandle.style.top = (cropBottomY / height * 100) + '%';
+        const denom = h || height || 1;
+        topLine.style.top = (cropTopY / denom * 100) + '%';
+        bottomLine.style.top = (cropBottomY / denom * 100) + '%';
+        topHandle.style.top = (cropTopY / denom * 100) + '%';
+        bottomHandle.style.top = (cropBottomY / denom * 100) + '%';
     }
     
     img.onload = updateLines;
@@ -434,15 +449,6 @@ function showCropUI(canvas, suggestedRegion) {
     }
     
     function endDrag() { dragging = null; }
-    
-    const newTopLine = topLine.cloneNode(true);
-    const newBotLine = bottomLine.cloneNode(true);
-    const newTopHandle = topHandle.cloneNode(true);
-    const newBotHandle = bottomHandle.cloneNode(true);
-    topLine.parentNode.replaceChild(newTopLine, topLine);
-    bottomLine.parentNode.replaceChild(newBotLine, bottomLine);
-    topHandle.parentNode.replaceChild(newTopHandle, topHandle);
-    bottomHandle.parentNode.replaceChild(newBotHandle, bottomHandle);
     
     if (window.cropDragAbort) window.cropDragAbort.abort();
     window.cropDragAbort = new AbortController();
@@ -502,23 +508,56 @@ function createCropContainer() {
     return div;
 }
 
-function processCroppedRegion(y, h) {
-    const canvas = originalUploadCanvas;
-    const cropCanvas = document.createElement('canvas');
-    cropCanvas.width = canvas.width;
-    cropCanvas.height = h;
-    cropCanvas.getContext('2d').drawImage(canvas, 0, y, canvas.width, h, 0, 0, canvas.width, h);
+async function recognizeMRZ(fullCanvas, cropTopY, cropHeight) {
+    // 1. Isolate MRZ strip only
+    const mrzCanvas = document.createElement('canvas');
+    mrzCanvas.width = fullCanvas.width;
+    mrzCanvas.height = cropHeight;
+    const ctx = mrzCanvas.getContext('2d');
+    ctx.drawImage(fullCanvas, 0, cropTopY, fullCanvas.width, cropHeight, 0, 0, fullCanvas.width, cropHeight);
     
-    const mrzH = h * 0.75;
-    const scaledCanvas = upscaleMRZ(cropCanvas, mrzH);
-    gentleThresholding(scaledCanvas);
+    // 2. Threshold the MRZ strip (much faster on small image)
+    gentleThresholding(mrzCanvas);
     
-    lastProcessedCanvas = scaledCanvas;
+    // 3. OCR with MRZ-optimized settings
+    const result = await Tesseract.recognize(
+        mrzCanvas,
+        'eng',
+        {
+            logger: m => console.log(m),
+            tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<',
+            tessedit_pageseg_mode: '6'  // Uniform block of text
+        }
+    );
     
-    imagePreview.src = scaledCanvas.toDataURL('image/jpeg', 0.85);
-    previewContainer.classList.remove('hidden');
-    uploadZone.classList.add('hidden');
-    extractBtn.disabled = false;
+    return result.data.text;
+}
+
+function processCroppedRegion(topY, height) {
+    // Use the cropped MRZ region only
+    recognizeMRZ(originalUploadCanvas, topY, height).then(rawText => {
+        const lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 20);
+        
+        // Use the existing parser to process the lines
+        const mrzData = [lines[0] || '', lines[1] || '', lines[2] || ''];
+        
+        // Setup UI for extraction result
+        lastProcessedCanvas = originalUploadCanvas; // Keep a reference
+        const parsedRecord = parseMRZ(mrzData);
+        populateForm(parsedRecord);
+        cardProgressView.classList.add('hidden');
+        cardFormView.classList.remove('hidden');
+    }).catch(err => {
+        console.error(err);
+        cardProgressView.classList.add('hidden');
+        cardUploadView.classList.remove('hidden');
+        errorText.textContent = "Failed to detect or parse MRZ text. Please ensure the image is clear and try again. (" + err.message + ")";
+        errorText.classList.remove('hidden');
+    });
+    
+    cardUploadView.classList.add('hidden');
+    cardProgressView.classList.remove('hidden');
+    errorText.classList.add('hidden');
 }
 
 // =============================================================================
