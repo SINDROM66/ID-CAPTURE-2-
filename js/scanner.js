@@ -185,11 +185,14 @@ function gentleThresholding(canvas) {
         grays[i] = 0.299 * data[idx] + 0.587 * data[idx+1] + 0.114 * data[idx+2];
     }
     
-    // Step 2: Contrast boost
-    const minGray = Math.min(...grays);
-    const maxGray = Math.max(...grays);
+    // Step 2: Contrast boost (loop-based, no spread)
+    let minGray = 255, maxGray = 0;
+    for (let i = 0; i < grays.length; i++) {
+        if (grays[i] < minGray) minGray = grays[i];
+        if (grays[i] > maxGray) maxGray = grays[i];
+    }
     const range = maxGray - minGray || 1;
-    for (let i = 0; i < width * height; i++) {
+    for (let i = 0; i < grays.length; i++) {
         grays[i] = ((grays[i] - minGray) / range) * 255;
     }
     
