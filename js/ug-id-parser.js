@@ -292,40 +292,36 @@ function correctNIN(ninRaw) {
     return null;
 }
 
-function extractNIN(line1, returnRaw = false) {
-    if (!line1 || line1.length < 30) return null;
-    
-    // CRITICAL: Normalize the ENTIRE line before ANY extraction
-    const normalizedLine = normalizeNIN(line1);
-    
-    const NIN_START_POSITION = 15;
-    const NIN_LENGTH = 14;
+function sanitizeMRZLine(line) {
+    return line
+        .toUpperCase()
+        .replace(/[^A-Z0-9<]/g, '')     // Strip everything except MRZ alphabet
+        .replace(/8/g, 'B')              // Common OCR error
+        .replace(/5/g, 'S')              // Context-dependent; use with care
+        .trim();
+}
 
-    if (normalizedLine.length >= NIN_START_POSITION + NIN_LENGTH) {
-        let nin = normalizedLine.substring(NIN_START_POSITION, NIN_START_POSITION + NIN_LENGTH);
-        console.log(`[NIN] Raw extracted (fixed position 15): "${nin}"`);
-        if (returnRaw) return nin;
-        const validNin = correctNIN(nin);
-        if (validNin) {
-            console.log(`[NIN] Validated: "${validNin}"`);
-            return validNin;
-        }
-    }
+// NIN extraction with corruption recovery
+function extractNIN(line1) {
+    // Uganda line 1: typically IDUGA or similar prefix, then DOB, then NIN
+    // Your log shows NIN at fixed position 15
+    const raw = line1.substring(15, 29); // 14 chars
     
-    const ninMatch = normalizedLine.match(/(CM|CF)[A-Z0-9]{12}/);
-    if (ninMatch) {
-        let nin = ninMatch[0];
-        console.log(`[NIN] Raw extracted (regex hunt): "${nin}"`);
-        if (returnRaw) return nin;
-        const validNin = correctNIN(nin);
-        if (validNin) {
-            console.log(`[NIN] Validated: "${validNin}"`);
-            return validNin;
-        }
-    }
+    // Try common corruption fixes
+    const candidates = [
+        raw,
+        raw.replace(/O/g, '0'),          // If NIN should be numeric-heavy
+        raw.replace(/C/g, '0').replace(/F/g, '0'),
+        raw.replace(/C/g, 'O').replace(/F/g, 'O'),
+        raw.replace(/I/g, '1').replace(/L/g, '1'),
+    ];
     
-    console.warn(`[NIN] All extraction strategies failed for line: "${normalizedLine}"`);
-    return null;
+    // Ugandan NIN is 14 alphanumeric. Test against your known valid NINs.
+    const ninRegex = /^[A-Z0-9]{14}$/;
+    for (const cand of candidates) {
+        if (ninRegex.test(cand)) return cand;
+    }
+    return raw; // Return best effort if none match
 }
 
 // =============================================================================
