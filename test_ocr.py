@@ -13,7 +13,7 @@ async def run_test():
         file_url = f"file:///{cwd.replace(chr(92), '/')}/index.html"
         
         # Hook console logs
-        page.on("console", lambda msg: print(f"[Browser]: {msg.text}") if "RAW OCR TEXT" in msg.text or "Starting" in msg.text or "Pass" in msg.text else None)
+        page.on("console", lambda msg: print(f"[Browser]: {msg.text}") if "RAW OCR TEXT" in msg.text or "Starting" in msg.text or "Pass" in msg.text or "[OCR Output]:" in msg.text or "[Region" in msg.text else None)
         
         await page.goto(file_url)
         
@@ -22,7 +22,7 @@ async def run_test():
         await page.click("#unlock-btn")
         await page.wait_for_selector("#card-barcode-upload:not(.hidden)", timeout=5000)
         
-        test_images = ["samuel_old.jpg", "timothy_new.jpg", "mellisa_new.jpg"]
+        test_images = ["samuel_old.jpg", "timothy_new.jpg", "mellisa_new.jpg", "elvis_new.jpg"]
         
         for img_name in test_images:
             print(f"\n======================================")

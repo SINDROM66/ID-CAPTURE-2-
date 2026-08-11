@@ -23,39 +23,18 @@ let cropTopY = 0;
 let cropBottomY = 0;
 
 function initScanner() {
-    triggerBtn.addEventListener('click', () => {
-        photoModal.classList.remove('hidden');
-    });
-    
+    triggerBtn.addEventListener('click', () => photoModal.classList.remove('hidden'));
     uploadZone.addEventListener('click', (e) => {
-        if(e.target !== triggerBtn) {
-            photoModal.classList.remove('hidden');
-        }
+        if(e.target !== triggerBtn) photoModal.classList.remove('hidden');
     });
 
-    btnCamera.addEventListener('click', () => {
-        photoModal.classList.add('hidden');
-        fileInputCamera.click();
-    });
-
-    btnGallery.addEventListener('click', () => {
-        photoModal.classList.add('hidden');
-        fileInputGallery.click();
-    });
-
-    btnCancelModal.addEventListener('click', () => {
-        photoModal.classList.add('hidden');
-    });
-
-    photoModal.addEventListener('click', (e) => {
-        if (e.target === photoModal) {
-            photoModal.classList.add('hidden');
-        }
-    });
+    btnCamera.addEventListener('click', () => { photoModal.classList.add('hidden'); fileInputCamera.click(); });
+    btnGallery.addEventListener('click', () => { photoModal.classList.add('hidden'); fileInputGallery.click(); });
+    btnCancelModal.addEventListener('click', () => photoModal.classList.add('hidden'));
+    photoModal.addEventListener('click', (e) => { if (e.target === photoModal) photoModal.classList.add('hidden'); });
 
     fileInputCamera.addEventListener('change', handleFileSelect);
     fileInputGallery.addEventListener('change', handleFileSelect);
-    
     extractBtn.addEventListener('click', handleExtraction);
     resetBtn.addEventListener('click', resetScanner);
 }
@@ -68,14 +47,11 @@ async function fixOrientation(file, img) {
         const buf = await file.slice(0, 65536).arrayBuffer();
         const view = new DataView(buf);
         if (view.getUint16(0, false) !== 0xFFD8) return 1;
-        
         let offset = 2;
         while (offset < view.byteLength) {
             const marker = view.getUint16(offset, false);
             if (marker === 0xFFD9) break;
-            
             if ((marker & 0xFF00) !== 0xFF00) { offset += 2; continue; }
-            
             if (marker === 0xFFE1) {
                 const segLen = view.getUint16(offset + 2, false);
                 const seg = new Uint8Array(buf, offset + 4, segLen - 2);
@@ -99,465 +75,175 @@ async function fixOrientation(file, img) {
     };
 
     let orientation = 1;
-    try {
-        orientation = await getOrientation(file);
-    } catch (exifErr) {
-        console.warn("[Upload] EXIF parsing failed, assuming no rotation.", exifErr);
-    }
-    
+    try { orientation = await getOrientation(file); } catch (e) { console.warn("[Upload] EXIF failed", e); }
     if (orientation <= 1) { img.exifOrientation = orientation; return img; }
 
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d");
-    
-    if (orientation >= 5) {
-        canvas.width = img.height;
-        canvas.height = img.width;
-    } else {
-        canvas.width = img.width;
-        canvas.height = img.height;
-    }
+    if (orientation >= 5) { canvas.width = img.height; canvas.height = img.width; }
+    else { canvas.width = img.width; canvas.height = img.height; }
 
     ctx.save();
     switch(orientation) {
         case 2: ctx.translate(canvas.width, 0); ctx.scale(-1, 1); break;
         case 3: ctx.translate(canvas.width, canvas.height); ctx.rotate(Math.PI); break;
         case 4: ctx.translate(0, canvas.height); ctx.scale(1, -1); break;
-        case 5:
-            ctx.translate(canvas.width, 0);
-            ctx.rotate(0.5 * Math.PI);
-            ctx.scale(1, -1);
-            break;
-        case 6:
-            ctx.translate(canvas.width, 0);
-            ctx.rotate(0.5 * Math.PI);
-            break;
-        case 7:
-            ctx.translate(0, canvas.height);
-            ctx.rotate(-0.5 * Math.PI);
-            ctx.scale(1, -1);
-            break;
-        case 8:
-            ctx.translate(0, canvas.height);
-            ctx.rotate(-0.5 * Math.PI);
-            break;
+        case 5: ctx.translate(canvas.width, 0); ctx.rotate(0.5*Math.PI); ctx.scale(1, -1); break;
+        case 6: ctx.translate(canvas.width, 0); ctx.rotate(0.5*Math.PI); break;
+        case 7: ctx.translate(0, canvas.height); ctx.rotate(-0.5*Math.PI); ctx.scale(1, -1); break;
+        case 8: ctx.translate(0, canvas.height); ctx.rotate(-0.5*Math.PI); break;
     }
     ctx.drawImage(img, 0, 0);
     ctx.restore();
-    
     canvas.exifOrientation = orientation;
     return canvas;
 }
 
 async function convertHeicToJpeg(file) {
     if (!file.type.includes("heic") && !file.name.toLowerCase().endsWith(".heic")) return file;
-    
     try {
-        console.log("[Upload] HEIC detected. Attempting native Canvas conversion...");
         const bitmap = await createImageBitmap(file);
         const canvas = document.createElement("canvas");
-        canvas.width = bitmap.width;
-        canvas.height = bitmap.height;
+        canvas.width = bitmap.width; canvas.height = bitmap.height;
         canvas.getContext("2d").drawImage(bitmap, 0, 0);
-        
         const blob = await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.85));
-        console.log("[Upload] HEIC converted successfully.");
         return new File([blob], "converted.jpg", { type: "image/jpeg" });
     } catch (e) {
-        throw new Error("HEIC not supported by this browser. Please change your camera to 'Most Compatible' (JPEG).");
+        throw new Error("HEIC not supported. Please change camera to 'Most Compatible' (JPEG).");
     }
 }
 
 // =============================================================================
-// GENTLE THRESHOLDING (C=5 + contrast boost)
+// CROP UI
 // =============================================================================
-function gentleThresholding(canvas) {
-    const ctx = canvas.getContext("2d");
-    const width = canvas.width;
-    const height = canvas.height;
-    const imgData = ctx.getImageData(0, 0, width, height);
-    const data = imgData.data;
-    
-    // Step 1: Convert to grayscale
-    const grays = new Uint8Array(width * height);
-    for (let i = 0; i < width * height; i++) {
-        const idx = i * 4;
-        grays[i] = 0.299 * data[idx] + 0.587 * data[idx+1] + 0.114 * data[idx+2];
-    }
-    
-    // Step 2: Contrast boost (loop-based, no spread)
-    let minGray = 255, maxGray = 0;
-    for (let i = 0; i < grays.length; i++) {
-        if (grays[i] < minGray) minGray = grays[i];
-        if (grays[i] > maxGray) maxGray = grays[i];
-    }
-    const range = maxGray - minGray || 1;
-    for (let i = 0; i < grays.length; i++) {
-        grays[i] = ((grays[i] - minGray) / range) * 255;
-    }
-    
-    // Step 3: Adaptive threshold with C=5
-    const s = Math.max(15, Math.floor(Math.min(width, height) / 20));
-    const s2 = Math.floor(s / 2);
-    const C = 5;
-    
-    const integral = new Uint32Array(width * height);
-    for (let y = 0; y < height; y++) {
-        let rowSum = 0;
-        for (let x = 0; x < width; x++) {
-            rowSum += grays[y * width + x];
-            integral[y * width + x] = rowSum + (y > 0 ? integral[(y - 1) * width + x] : 0);
-        }
-    }
-    
-    for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-            const x1 = Math.max(x - s2, 0);
-            const y1 = Math.max(y - s2, 0);
-            const x2 = Math.min(x + s2, width - 1);
-            const y2 = Math.min(y + s2, height - 1);
-            const count = (x2 - x1 + 1) * (y2 - y1 + 1);
-            
-            const a = (x1 > 0 && y1 > 0) ? integral[(y1 - 1) * width + (x1 - 1)] : 0;
-            const b = (y1 > 0) ? integral[(y1 - 1) * width + x2] : 0;
-            const c = (x1 > 0) ? integral[y2 * width + (x1 - 1)] : 0;
-            const d = integral[y2 * width + x2];
-            
-            const mean = (d - b - c + a) / count;
-            const val = (grays[y * width + x] < mean - C) ? 0 : 255;
-            
-            const idx = (y * width + x) * 4;
-            data[idx] = data[idx+1] = data[idx+2] = val;
-        }
-    }
-    
-    ctx.putImageData(imgData, 0, 0);
-    return canvas;
-}
+function ensureCropUI() {
+    let container = document.getElementById('crop-container');
+    if (container) return container;
 
-// =============================================================================
-// SMART MRZ DETECTION
-// =============================================================================
-function detectMRZRegion(canvas) {
-    const ctx = canvas.getContext('2d');
-    const { width, height } = canvas;
-    const imgData = ctx.getImageData(0, 0, width, height);
-    
-    const bottomStart = Math.floor(height * 0.35);
-    const bh = height - bottomStart;
-    
-    const textness = new Float32Array(bh);
-    for (let y = 0; y < bh; y++) {
-        const actualY = bottomStart + y;
-        let edgeSum = 0;
-        let darkSum = 0;
-        const rowPixels = [];
-        
-        for (let x = 1; x < width - 1; x++) {
-            const idx = (actualY * width + x) * 4;
-            const leftIdx = (actualY * width + (x - 1)) * 4;
-            const rightIdx = (actualY * width + (x + 1)) * 4;
-            
-            const center = 0.299 * imgData.data[idx] + 0.587 * imgData.data[idx+1] + 0.114 * imgData.data[idx+2];
-            const left = 0.299 * imgData.data[leftIdx] + 0.587 * imgData.data[leftIdx+1] + 0.114 * imgData.data[leftIdx+2];
-            const right = 0.299 * imgData.data[rightIdx] + 0.587 * imgData.data[rightIdx+1] + 0.114 * imgData.data[rightIdx+2];
-            
-            edgeSum += Math.abs(right - left);
-            rowPixels.push(center);
-            if (center < 140) darkSum++;
-        }
-        
-        const mean = rowPixels.reduce((a,b) => a+b, 0) / rowPixels.length;
-        const variance = rowPixels.reduce((a,b) => a + (b-mean)**2, 0) / rowPixels.length;
-        const darkFrac = darkSum / (width - 2);
-        
-        if (darkFrac > 0.92 || darkFrac < 0.03) {
-            textness[y] = 0;
-        } else {
-            textness[y] = (edgeSum / (width - 2)) * (variance / 255) * Math.min(darkFrac * 2, 1);
-        }
-    }
-    
-    const smoothed = new Float32Array(bh);
-    for (let i = 0; i < bh; i++) {
-        let sum = 0, count = 0;
-        for (let j = -2; j <= 2; j++) {
-            const idx = i + j;
-            if (idx >= 0 && idx < bh) { sum += textness[idx]; count++; }
-        }
-        smoothed[i] = sum / count;
-    }
-    
-    const sorted = Array.from(smoothed).sort((a,b) => a - b);
-    let threshold = sorted[Math.floor(sorted.length * 0.5)];
-    const maxVal = sorted[sorted.length - 1];
-    if (threshold > maxVal * 0.4) threshold = maxVal * 0.3;
-    
-    const peaks = [];
-    let inPeak = false, peakStart = 0;
-    for (let i = 0; i < bh; i++) {
-        if (smoothed[i] > threshold && !inPeak) {
-            inPeak = true; peakStart = i;
-        } else if (smoothed[i] <= threshold && inPeak) {
-            inPeak = false;
-            peaks.push({
-                start: bottomStart + peakStart,
-                end: bottomStart + i - 1,
-                height: i - peakStart
-            });
-        }
-    }
-    if (inPeak) {
-        peaks.push({
-            start: bottomStart + peakStart,
-            end: height - 1,
-            height: bh - peakStart
-        });
-    }
-    
-    const textPeaks = peaks.filter(p => p.height >= 3 && p.height <= 60);
-    if (textPeaks.length === 0) return null;
-    
-    let bestResult = null;
-    for (let i = textPeaks.length - 3; i >= 0; i--) {
-        const p1 = textPeaks[i];
-        const p2 = textPeaks[i+1];
-        const p3 = textPeaks[i+2];
-        const gap1 = p2.start - p1.end;
-        const gap2 = p3.start - p2.end;
-        
-        if (gap1 >= -2 && gap1 <= 30 && gap2 >= -2 && gap2 <= 30 && p1.start > height * 0.35) {
-            const pad = 10;
-            const cropY = Math.max(0, p1.start - pad);
-            const cropH = Math.min(height, p3.end + pad) - cropY;
-            const mrzH = p3.end - p1.start;
-            const score = p3.end;
-            
-            if (bestResult === null || score > bestResult.score) {
-                bestResult = { y: cropY, h: cropH, mrzH: mrzH, method: 'smart', score: score };
-            }
-        }
-    }
-    
-    return bestResult;
-}
-
-// =============================================================================
-// DYNAMIC UPSCALE (clamped 25-50px char height)
-// =============================================================================
-function upscaleMRZ(cropCanvas, estimatedMrzHeight) {
-    const currentCharHeight = estimatedMrzHeight / 3.5;
-    const TARGET = 35;
-    const MIN = 25;
-    const MAX = 50;
-    
-    let scale = TARGET / currentCharHeight;
-    
-    let finalChar = currentCharHeight * scale;
-    if (finalChar < MIN) {
-        scale = MIN / currentCharHeight;
-    } else if (finalChar > MAX) {
-        scale = MAX / currentCharHeight;
-    }
-    
-    scale = Math.max(2.0, scale);
-    
-    finalChar = currentCharHeight * scale;
-    if (finalChar > MAX) {
-        scale = MAX / currentCharHeight;
-    }
-    
-    const scaled = document.createElement('canvas');
-    scaled.width = Math.round(cropCanvas.width * scale);
-    scaled.height = Math.round(cropCanvas.height * scale);
-    const sCtx = scaled.getContext('2d');
-    sCtx.imageSmoothingEnabled = false;
-    sCtx.drawImage(cropCanvas, 0, 0, scaled.width, scaled.height);
-    return scaled;
-}
-
-// =============================================================================
-// MANUAL CROP UI
-// =============================================================================
-function showCropUI(canvas, suggestedRegion) {
-    const container = document.getElementById('crop-container') || createCropContainer();
-    container.classList.remove('hidden');
-    
-    const img = container.querySelector('.crop-image');
-    const confirmBtn = document.getElementById('confirm-crop-btn');
-    const autoBtn = document.getElementById('auto-crop-btn');
-    
-    img.src = canvas.toDataURL('image/jpeg', 0.9);
-    originalUploadCanvas = canvas;
-    
-    const height = canvas.height;
-    let topY = suggestedRegion ? suggestedRegion.y : Math.floor(height * 0.55);
-    let bottomY = suggestedRegion ? suggestedRegion.y + suggestedRegion.h : Math.floor(height * 0.85);
-    
-    cropTopY = topY;
-    cropBottomY = bottomY;
-    
-    let topLine = container.querySelector('.crop-line-top');
-    let bottomLine = container.querySelector('.crop-line-bottom');
-    let topHandle = container.querySelector('.crop-handle-top');
-    let bottomHandle = container.querySelector('.crop-handle-bottom');
-    
-    const newTopLine = topLine.cloneNode(true);
-    const newBotLine = bottomLine.cloneNode(true);
-    const newTopHandle = topHandle.cloneNode(true);
-    const newBotHandle = bottomHandle.cloneNode(true);
-    topLine.parentNode.replaceChild(newTopLine, topLine);
-    bottomLine.parentNode.replaceChild(newBotLine, bottomLine);
-    topHandle.parentNode.replaceChild(newTopHandle, topHandle);
-    bottomHandle.parentNode.replaceChild(newBotHandle, bottomHandle);
-    
-    topLine = container.querySelector('.crop-line-top');
-    bottomLine = container.querySelector('.crop-line-bottom');
-    topHandle = container.querySelector('.crop-handle-top');
-    bottomHandle = container.querySelector('.crop-handle-bottom');
-    
-    function updateLines() {
-        const h = img.naturalHeight || img.clientHeight || height;
-        const denom = h || height || 1;
-        topLine.style.top = (cropTopY / denom * 100) + '%';
-        bottomLine.style.top = (cropBottomY / denom * 100) + '%';
-        topHandle.style.top = (cropTopY / denom * 100) + '%';
-        bottomHandle.style.top = (cropBottomY / denom * 100) + '%';
-    }
-    
-    img.onload = updateLines;
-    setTimeout(updateLines, 100);
-    
-    let dragging = null;
-    
-    function startDrag(e, line) { 
-        dragging = line; 
-        if (e.cancelable) e.preventDefault(); 
-    }
-    
-    function onDrag(e) {
-        if (!dragging) return;
-        if (e.cancelable) e.preventDefault();
-        const rect = img.getBoundingClientRect();
-        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-        const pct = (clientY - rect.top) / rect.height;
-        const y = Math.max(0, Math.min(height, Math.round(pct * height)));
-        
-        if (dragging === 'top') cropTopY = Math.min(y, cropBottomY - 30);
-        else cropBottomY = Math.max(y, cropTopY + 30);
-        updateLines();
-    }
-    
-    function endDrag() { dragging = null; }
-    
-    if (window.cropDragAbort) window.cropDragAbort.abort();
-    window.cropDragAbort = new AbortController();
-    const opts = { signal: window.cropDragAbort.signal, passive: false };
-    
-    newTopLine.addEventListener('mousedown', (e) => startDrag(e, 'top'), opts);
-    newTopLine.addEventListener('touchstart', (e) => startDrag(e, 'top'), opts);
-    newBotLine.addEventListener('mousedown', (e) => startDrag(e, 'bottom'), opts);
-    newBotLine.addEventListener('touchstart', (e) => startDrag(e, 'bottom'), opts);
-    newTopHandle.addEventListener('mousedown', (e) => startDrag(e, 'top'), opts);
-    newTopHandle.addEventListener('touchstart', (e) => startDrag(e, 'top'), opts);
-    newBotHandle.addEventListener('mousedown', (e) => startDrag(e, 'bottom'), opts);
-    newBotHandle.addEventListener('touchstart', (e) => startDrag(e, 'bottom'), opts);
-    
-    document.addEventListener('mousemove', onDrag, opts);
-    document.addEventListener('touchmove', onDrag, opts);
-    document.addEventListener('mouseup', endDrag, opts);
-    document.addEventListener('touchend', endDrag, opts);
-    
-    autoBtn.onclick = () => {
-        const newRegion = detectMRZRegion(originalUploadCanvas);
-        if (newRegion) {
-            cropTopY = newRegion.y;
-            cropBottomY = newRegion.y + newRegion.h;
-            updateLines();
-        }
-    };
-    
-    confirmBtn.onclick = () => {
-        container.classList.add('hidden');
-        processCroppedRegion(cropTopY, cropBottomY - cropTopY);
-    };
-}
-
-function createCropContainer() {
-    const existing = document.getElementById('crop-container');
-    if (existing) existing.remove();
-    
-    const div = document.createElement('div');
-    div.id = 'crop-container';
-    div.className = 'crop-container hidden';
-    div.innerHTML = `
-        <div class="crop-wrapper">
-            <img class="crop-image" alt="Adjust crop">
-            <div class="crop-line crop-line-top"></div>
-            <div class="crop-line crop-line-bottom"></div>
-            <div class="crop-handle crop-handle-top">↑ DRAG ↑</div>
-            <div class="crop-handle crop-handle-bottom">↓ DRAG ↓</div>
-            <div class="crop-label">Place MRZ between green lines</div>
+    container = document.createElement('div');
+    container.id = 'crop-container';
+    container.className = 'crop-container hidden';
+    container.innerHTML = `
+        <div style="color:#fff; text-align:center; margin-bottom:8px; font-weight:600; font-size:13px; text-shadow:0 1px 3px rgba(0,0,0,0.8);">
+            Place MRZ between the green lines
+        </div>
+        <div class="crop-wrapper" id="crop-wrapper">
+            <img class="crop-image" id="crop-image" style="display:block; max-width:100%; max-height:60vh; object-fit:contain;">
+            <div class="crop-line" id="crop-line-top" style="top:65%;"></div>
+            <div class="crop-line" id="crop-line-bottom" style="top:90%;"></div>
+            <div class="crop-handle crop-handle-top" id="crop-handle-top" style="top:65%;">↑ DRAG ↑</div>
+            <div class="crop-handle crop-handle-bottom" id="crop-handle-bottom" style="top:90%;">↓ DRAG ↓</div>
         </div>
         <div class="crop-controls">
-            <button id="auto-crop-btn" class="btn-secondary">Auto-Detect</button>
-            <button id="confirm-crop-btn" class="btn-primary">Confirm & Extract</button>
+            <button id="crop-auto-btn" class="btn-secondary" style="background:rgba(255,255,255,0.2); color:#fff; border:1px solid rgba(255,255,255,0.3); padding:14px 24px; border-radius:10px; font-size:16px; font-weight:600; cursor:pointer;">Auto-Detect</button>
+            <button id="crop-confirm-btn" class="btn-primary" style="background:#00e676; color:#000; padding:14px 24px; border-radius:10px; font-size:16px; font-weight:600; border:none; cursor:pointer;">Confirm & Extract</button>
         </div>
     `;
-    document.body.appendChild(div);
-    return div;
-}
+    document.body.appendChild(container);
 
-async function recognizeMRZ(fullCanvas, cropTopY, cropHeight) {
-    // 1. Isolate MRZ strip only
-    const mrzCanvas = document.createElement('canvas');
-    mrzCanvas.width = fullCanvas.width;
-    mrzCanvas.height = cropHeight;
-    const ctx = mrzCanvas.getContext('2d');
-    ctx.drawImage(fullCanvas, 0, cropTopY, fullCanvas.width, cropHeight, 0, 0, fullCanvas.width, cropHeight);
-    
-    // 2. Threshold the MRZ strip (much faster on small image)
-    gentleThresholding(mrzCanvas);
-    
-    // 3. OCR with MRZ-optimized settings
-    const result = await Tesseract.recognize(
-        mrzCanvas,
-        'eng',
-        {
-            logger: m => console.log(m),
-            tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<',
-            tessedit_pageseg_mode: '6'  // Uniform block of text
-        }
-    );
-    
-    return result.data.text;
-}
+    // Drag logic
+    const topLine = document.getElementById('crop-line-top');
+    const botLine = document.getElementById('crop-line-bottom');
+    const topHandle = document.getElementById('crop-handle-top');
+    const botHandle = document.getElementById('crop-handle-bottom');
+    const wrapper = document.getElementById('crop-wrapper');
+    let dragging = null;
 
-function processCroppedRegion(topY, height) {
-    // Use the cropped MRZ region only
-    recognizeMRZ(originalUploadCanvas, topY, height).then(rawText => {
-        const lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 20);
-        
-        // Use the existing parser to process the lines
-        const mrzData = [lines[0] || '', lines[1] || '', lines[2] || ''];
-        
-        // Setup UI for extraction result
-        lastProcessedCanvas = originalUploadCanvas; // Keep a reference
-        const parsedRecord = parseMRZ(mrzData);
-        populateForm(parsedRecord);
-        cardProgressView.classList.add('hidden');
-        cardFormView.classList.remove('hidden');
-    }).catch(err => {
-        console.error(err);
-        cardProgressView.classList.add('hidden');
-        cardUploadView.classList.remove('hidden');
-        errorText.textContent = "Failed to detect or parse MRZ text. Please ensure the image is clear and try again. (" + err.message + ")";
-        errorText.classList.remove('hidden');
+    function getY(e) {
+        return e.touches ? e.touches[0].clientY : e.clientY;
+    }
+
+    function setLines(topPct, botPct) {
+        topLine.style.top = topPct + '%';
+        topHandle.style.top = topPct + '%';
+        botLine.style.top = botPct + '%';
+        botHandle.style.top = botPct + '%';
+    }
+
+    function onStart(e, which) {
+        dragging = which;
+        e.preventDefault();
+        e.stopPropagation();
+    }
+
+    function onMove(e) {
+        if (!dragging) return;
+        const rect = wrapper.getBoundingClientRect();
+        let y = ((getY(e) - rect.top) / rect.height) * 100;
+        y = Math.max(5, Math.min(95, y));
+
+        const other = dragging === 'top' ?
+            parseFloat(botLine.style.top) :
+            parseFloat(topLine.style.top);
+
+        if (dragging === 'top' && y < other - 8) setLines(y, other);
+        if (dragging === 'bottom' && y > other + 8) setLines(other, y);
+    }
+
+    function onEnd() { dragging = null; }
+
+    [topLine, topHandle].forEach(el => {
+        el.addEventListener('mousedown', e => onStart(e, 'top'));
+        el.addEventListener('touchstart', e => onStart(e, 'top'), { passive: false });
     });
-    
-    cardUploadView.classList.add('hidden');
-    cardProgressView.classList.remove('hidden');
-    errorText.classList.add('hidden');
+    [botLine, botHandle].forEach(el => {
+        el.addEventListener('mousedown', e => onStart(e, 'bottom'));
+        el.addEventListener('touchstart', e => onStart(e, 'bottom'), { passive: false });
+    });
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('touchmove', onMove, { passive: false });
+    document.addEventListener('mouseup', onEnd);
+    document.addEventListener('touchend', onEnd);
+
+    // Buttons
+    document.getElementById('crop-auto-btn').addEventListener('click', () => {
+        autoDetectCrop();
+    });
+    document.getElementById('crop-confirm-btn').addEventListener('click', () => {
+        confirmCropAndExtract();
+    });
+
+    return container;
+}
+
+function autoDetectCrop() {
+    if (!lastProcessedCanvas) return;
+    const h = lastProcessedCanvas.height;
+    // Default MRZ is bottom 25%
+    const topPct = 65, botPct = 90;
+    document.getElementById('crop-line-top').style.top = topPct + '%';
+    document.getElementById('crop-handle-top').style.top = topPct + '%';
+    document.getElementById('crop-line-bottom').style.top = botPct + '%';
+    document.getElementById('crop-handle-bottom').style.top = botPct + '%';
+}
+
+function confirmCropAndExtract() {
+    const wrapper = document.getElementById('crop-wrapper');
+    const img = document.getElementById('crop-image');
+    const topPct = parseFloat(document.getElementById('crop-line-top').style.top) / 100;
+    const botPct = parseFloat(document.getElementById('crop-line-bottom').style.top) / 100;
+
+    // Map percentage to actual canvas coordinates
+    const scaleY = lastProcessedCanvas.height / img.naturalHeight;
+    // The displayed image may be letterboxed; compute actual rendered image height inside wrapper
+    const rect = wrapper.getBoundingClientRect();
+    const renderedH = img.clientHeight;
+    const offsetY = (rect.height - renderedH) / 2;
+
+    const y1 = Math.max(0, Math.round(((topPct * rect.height) - offsetY) / renderedH * lastProcessedCanvas.height));
+    const y2 = Math.min(lastProcessedCanvas.height, Math.round(((botPct * rect.height) - offsetY) / renderedH * lastProcessedCanvas.height));
+
+    const cropRegion = {
+        x: 0,
+        y: Math.min(y1, y2),
+        w: lastProcessedCanvas.width,
+        h: Math.abs(y2 - y1)
+    };
+
+    console.log('[Crop] Region:', cropRegion);
+    document.getElementById('crop-container').classList.add('hidden');
+    runExtraction(cropRegion);
 }
 
 // =============================================================================
@@ -566,14 +252,13 @@ function processCroppedRegion(topY, height) {
 async function handleFileSelect(e) {
     let file = e.target.files[0];
     if (!file) return;
-
     errorText.classList.add('hidden');
     console.log(`[Upload] Starting process for: ${file.name || 'unknown'}`);
 
     try {
         file = new File([file], file.name || "upload.jpg", { type: file.type || "image/jpeg" });
         file = await convertHeicToJpeg(file);
-        
+
         let imageSource = await new Promise((resolve, reject) => {
             const img = new Image();
             const url = URL.createObjectURL(file);
@@ -584,23 +269,26 @@ async function handleFileSelect(e) {
         imageSource = await fixOrientation(file, imageSource);
 
         const MAX_DIMENSION = 1500;
-        let width = imageSource.width;
-        let height = imageSource.height;
+        let width = imageSource.width, height = imageSource.height;
         if (width > MAX_DIMENSION || height > MAX_DIMENSION) {
             const scale = Math.min(MAX_DIMENSION / width, MAX_DIMENSION / height);
             width = Math.round(width * scale);
             height = Math.round(height * scale);
         }
-        
         const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
+        canvas.width = width; canvas.height = height;
         canvas.getContext('2d').drawImage(imageSource, 0, 0, width, height);
 
-        const suggestedRegion = detectMRZRegion(canvas);
-        console.log(`[Upload] Smart detection:`, suggestedRegion);
-        
-        showCropUI(canvas, suggestedRegion);
+        lastProcessedCanvas = canvas;
+
+        // Show crop UI instead of raw preview
+        const cropUI = ensureCropUI();
+        const cropImage = document.getElementById('crop-image');
+        cropImage.src = canvas.toDataURL("image/jpeg", 0.85);
+        cropImage.onload = () => {
+            autoDetectCrop(); // reset to defaults once image is known
+            cropUI.classList.remove('hidden');
+        };
 
     } catch (err) {
         console.error(err);
@@ -609,35 +297,30 @@ async function handleFileSelect(e) {
     }
 }
 
-async function handleExtraction() {
-    if (!lastProcessedCanvas) return;
-
+async function runExtraction(cropRegion) {
     cardUploadView.classList.add('hidden');
     cardProgressView.classList.remove('hidden');
     errorText.classList.add('hidden');
 
     try {
         await new Promise(r => setTimeout(r, 100));
-        const parsedRecord = await parseUgandaID(lastProcessedCanvas);
-        
+        const parsedRecord = await parseUgandaID(lastProcessedCanvas, cropRegion);
         populateForm(parsedRecord);
         cardProgressView.classList.add('hidden');
         cardFormView.classList.remove('hidden');
-        
     } catch (err) {
         console.error(err);
         cardProgressView.classList.add('hidden');
         cardUploadView.classList.remove('hidden');
         errorText.textContent = "Failed to detect or parse MRZ text. Please ensure the image is clear and try again. (" + err.message + ")";
-        
-        const retakeBtn = document.createElement('button');
-        retakeBtn.textContent = 'Retake Photo';
-        retakeBtn.className = 'retake-btn';
-        retakeBtn.addEventListener('click', resetScanner);
-        errorText.appendChild(retakeBtn);
-        
         errorText.classList.remove('hidden');
     }
+}
+
+function handleExtraction() {
+    // Legacy button handler — now unused, extraction happens from crop UI
+    if (!lastProcessedCanvas) return;
+    confirmCropAndExtract();
 }
 
 function resetScanner() {
@@ -651,7 +334,6 @@ function resetScanner() {
     errorText.textContent = '';
     lastProcessedCanvas = null;
     originalUploadCanvas = null;
-    
     const cropContainer = document.getElementById('crop-container');
     if (cropContainer) cropContainer.classList.add('hidden');
 }
@@ -668,13 +350,13 @@ function populateForm(record) {
     document.getElementById('givenName').value = record.givenName || '';
     document.getElementById('otherName').value = record.otherName || '';
     document.getElementById('dob').value = record.dob || '';
-    
+
     if (record.sex) {
         const sexSelect = document.getElementById('sex');
         if (record.sex.toLowerCase() === 'male') sexSelect.value = 'Male';
         else if (record.sex.toLowerCase() === 'female') sexSelect.value = 'Female';
     }
-    
+
     document.getElementById('nationality').value = record.nationality || 'UGA';
     document.getElementById('nin').value = record.nin || '';
 

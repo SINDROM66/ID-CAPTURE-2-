@@ -526,3 +526,79 @@ body {
     color: #fff;
     border: 1px solid rgba(255,255,255,0.3);
 }
+/* --- CROP UI FIXES --- */
+.crop-container {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.92);
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+.crop-container.hidden { display: none !important; }
+
+.crop-wrapper {
+    position: relative;
+    max-width: 100%;
+    max-height: 60vh;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+    background: #000;
+}
+
+.crop-image {
+    display: block;
+    max-width: 100%;
+    max-height: 60vh;
+    object-fit: contain;
+}
+
+/* Green draggable lines */
+.crop-line {
+    position: absolute;
+    left: 0; right: 0;
+    height: 4px;
+    background: #00e676;
+    box-shadow: 0 0 12px #00e676, 0 0 24px rgba(0,230,118,0.5);
+    cursor: ns-resize;
+    z-index: 10;
+    transform: translateY(-50%);
+}
+.crop-line::before {
+    content: '';
+    position: absolute;
+    left: 0; right: 0;
+    top: -20px; bottom: -20px;
+}
+
+/* Drag handles */
+.crop-handle {
+    position: absolute;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: #00e676;
+    color: #000;
+    font-size: 12px;
+    font-weight: bold;
+    padding: 6px 16px;
+    border-radius: 20px;
+    cursor: ns-resize;
+    z-index: 11;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.4);
+    user-select: none;
+    white-space: nowrap;
+}
+
+.crop-controls {
+    margin-top: 20px;
+    display: flex;
+    gap: 16px;
+    z-index: 12;
+}
+
+/* Override old center label if it exists */
+.crop-label { display: none !important; }
