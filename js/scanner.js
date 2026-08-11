@@ -415,9 +415,14 @@ function showCropUI(canvas, suggestedRegion) {
     
     let dragging = null;
     
-    function startDrag(e, line) { dragging = line; e.preventDefault(); }
+    function startDrag(e, line) { 
+        dragging = line; 
+        if (e.cancelable) e.preventDefault(); 
+    }
+    
     function onDrag(e) {
         if (!dragging) return;
+        if (e.cancelable) e.preventDefault();
         const rect = img.getBoundingClientRect();
         const clientY = e.touches ? e.touches[0].clientY : e.clientY;
         const pct = (clientY - rect.top) / rect.height;
@@ -427,6 +432,7 @@ function showCropUI(canvas, suggestedRegion) {
         else cropBottomY = Math.max(y, cropTopY + 30);
         updateLines();
     }
+    
     function endDrag() { dragging = null; }
     
     const newTopLine = topLine.cloneNode(true);
@@ -438,23 +444,23 @@ function showCropUI(canvas, suggestedRegion) {
     topHandle.parentNode.replaceChild(newTopHandle, topHandle);
     bottomHandle.parentNode.replaceChild(newBotHandle, bottomHandle);
     
-    newTopLine.addEventListener('mousedown', (e) => startDrag(e, 'top'));
-    newTopLine.addEventListener('touchstart', (e) => startDrag(e, 'top'));
-    newBotLine.addEventListener('mousedown', (e) => startDrag(e, 'bottom'));
-    newBotLine.addEventListener('touchstart', (e) => startDrag(e, 'bottom'));
-    newTopHandle.addEventListener('mousedown', (e) => startDrag(e, 'top'));
-    newTopHandle.addEventListener('touchstart', (e) => startDrag(e, 'top'));
-    newBotHandle.addEventListener('mousedown', (e) => startDrag(e, 'bottom'));
-    newBotHandle.addEventListener('touchstart', (e) => startDrag(e, 'bottom'));
+    if (window.cropDragAbort) window.cropDragAbort.abort();
+    window.cropDragAbort = new AbortController();
+    const opts = { signal: window.cropDragAbort.signal, passive: false };
     
-    document.removeEventListener('mousemove', onDrag);
-    document.removeEventListener('touchmove', onDrag);
-    document.removeEventListener('mouseup', endDrag);
-    document.removeEventListener('touchend', endDrag);
-    document.addEventListener('mousemove', onDrag);
-    document.addEventListener('touchmove', onDrag);
-    document.addEventListener('mouseup', endDrag);
-    document.addEventListener('touchend', endDrag);
+    newTopLine.addEventListener('mousedown', (e) => startDrag(e, 'top'), opts);
+    newTopLine.addEventListener('touchstart', (e) => startDrag(e, 'top'), opts);
+    newBotLine.addEventListener('mousedown', (e) => startDrag(e, 'bottom'), opts);
+    newBotLine.addEventListener('touchstart', (e) => startDrag(e, 'bottom'), opts);
+    newTopHandle.addEventListener('mousedown', (e) => startDrag(e, 'top'), opts);
+    newTopHandle.addEventListener('touchstart', (e) => startDrag(e, 'top'), opts);
+    newBotHandle.addEventListener('mousedown', (e) => startDrag(e, 'bottom'), opts);
+    newBotHandle.addEventListener('touchstart', (e) => startDrag(e, 'bottom'), opts);
+    
+    document.addEventListener('mousemove', onDrag, opts);
+    document.addEventListener('touchmove', onDrag, opts);
+    document.addEventListener('mouseup', endDrag, opts);
+    document.addEventListener('touchend', endDrag, opts);
     
     autoBtn.onclick = () => {
         const newRegion = detectMRZRegion(originalUploadCanvas);
