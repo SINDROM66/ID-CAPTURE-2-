@@ -146,11 +146,43 @@ function fixTruncation(name) {
 
 function parseMRZName(line3) {
     line3 = line3.replace(/<+$/, '');
-    if (!line3.includes('<<')) {
+
+    // PRE-PROCESSING: Fix known OCR separator corruptions
+    line3 = line3.replace(/K<C/g, '<<<').replace(/<C/g, '<<').replace(/K</g, '<<');
+
+    // 1. Fix leading artifacts (I, A, 1) before the first valid name
+    if (line3.length > 3 && 'AI1'.includes(line3[0])) {
+        // Find the valid surname after the artifact
         for (let len = line3.length; len > 2; len--) {
-            if (COMMON_NAMES.has(line3.slice(0,len))) return { surname: line3.slice(0,len), givenName: '', otherName: '' };
+            if (COMMON_NAMES.has(line3.slice(1, len))) {
+                line3 = line3.slice(1);
+                break;
+            }
         }
-        return { surname: line3, givenName: '', otherName: '' };
+    }
+
+    // 2. Try to inject missing '<<' for badly glued words (e.g. AGABACCMELLISACKIRABO)
+    if (!line3.includes('<<')) {
+        const artifacts = ['CC', 'KK', 'CK', 'KC', 'C', 'K', 'X'];
+        let resolved = false;
+        for (const art of artifacts) {
+            if (line3.includes(art)) {
+                const pieces = line3.split(art);
+                // check if the first piece is a valid surname
+                if (COMMON_NAMES.has(pieces[0])) {
+                    line3 = pieces.join('<<');
+                    resolved = true;
+                    break;
+                }
+            }
+        }
+        if (!resolved) {
+            // Still no <<, fallback to longest prefix
+            for (let len = line3.length; len > 2; len--) {
+                if (COMMON_NAMES.has(line3.slice(0,len))) return { surname: line3.slice(0,len), givenName: '', otherName: '' };
+            }
+            return { surname: line3, givenName: '', otherName: '' };
+        }
     }
 
     const parts = line3.split('<<');
@@ -170,6 +202,28 @@ function parseMRZName(line3) {
             part = part.slice(1);
         }
         part = fixTruncation(part);
+        
+        // NEW: Artifact splitter for given names
+        const artifacts = ['CC', 'KK', 'CK', 'KC', 'C', 'K', 'X'];
+        let splitDone = false;
+        for (const art of artifacts) {
+            if (part.includes(art)) {
+                const pieces = part.split(art);
+                let allValid = true;
+                for (let p of pieces) {
+                    if (p.length > 2 && !COMMON_NAMES.has(p)) {
+                        allValid = false; break;
+                    }
+                }
+                if (allValid && pieces.length > 1) {
+                    cleanedGiven.push(...pieces.filter(p => p.length > 1));
+                    splitDone = true;
+                    break;
+                }
+            }
+        }
+        if (splitDone) continue;
+
         if (COMMON_NAMES.has(part) || part.length >= 3) {
             if (part.length > 10) cleanedGiven.push(...splitMergedName(part));
             else cleanedGiven.push(part);
