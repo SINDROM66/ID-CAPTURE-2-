@@ -112,7 +112,8 @@ function extractMRZ(textLines) {
 
         const l1Valid = /^(ID|AC)/.test(l1) && l1.includes('UGA');
         const l2Valid = /^\d{6}[0-9<][MF]/.test(l2);
-        const l3Valid = l3.includes('<<') && /[A-Z]{3,}/.test(l3);
+        // Ensure the original string had '<<' before padding was applied
+        const l3Valid = cleaned[i+2].includes('<<') && /[A-Z]{3,}/.test(l3);
 
         if (l1Valid && l2Valid && l3Valid) return [l1, l2, l3];
     }
@@ -308,11 +309,22 @@ async function parseUgandaID(imageCanvas, cropRegion) {
         console.log('[MRZ] Using user crop region:', cropRegion);
     }
 
-    // Step 1: Remove black bars
-    const noBars = removeBlackBars(sourceCanvas);
+    let text;
+    
+    if (cropRegion) {
+        // We already have the perfectly cropped MRZ from the Drag UI!
+        // No need to slice it horizontally again. Just threshold and read.
+        console.log('[MRZ] Applying thresholding directly to user crop');
+        gentleThresholding(sourceCanvas);
+        text = await runTesseract(sourceCanvas);
+    } else {
+        // Step 1: Remove black bars
+        const noBars = removeBlackBars(sourceCanvas);
 
-    // Step 2: Find MRZ region and get text
-    const { crop: mrzCrop, text, desc } = await findMRZRegion(noBars);
+        // Step 2: Find MRZ region and get text
+        const result = await findMRZRegion(noBars);
+        text = result.text;
+    }
 
     console.log("[OCR Output]:\n" + text);
 
