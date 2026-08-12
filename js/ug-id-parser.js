@@ -1,5 +1,5 @@
 // ============================================
-// MRZ-OCR PIPELINE v5 — BULLETPROOF
+// MRZ-OCR PIPELINE v6 — BULLETPROOF FINAL
 // ============================================
 
 const NON_MRZ_WORDS = [
@@ -19,7 +19,7 @@ const COMMON_NAMES = new Set([
     'AKELLO','MUKASA','NAMUYA','OKOT','OPIO','ODONG','SSEKANDI','KALULE',
     'AMANYA','OCAN','KINTU','BWIRE','NANTONGO','OCHIENG','TWINOMUJUNI',
     'MUSENERO','ODOCH','ABO','ATIM','NAKATO','OKELLO','ALEX','ELVIN',
-    'KEVIN','PATRICIA'
+    'KEVIN','PATRICIA','ISHVAH','NABIMANYA'
 ]);
 
 const TRUNCATION_FIXES = {
@@ -59,7 +59,6 @@ function daysInMonth(y, m) {
 // --- Line Cleaners ---
 function cleanLine1(line) {
     line = line.trim().toUpperCase();
-    // strip leading artifacts aggressively
     line = line.replace(/^[^\w<]*?(ID|AC)/, '$1');
     line = line.replace(/[^A-Z0-9<]+$/g, '');
     line = line.replace(/[^A-Z0-9<]/g, '');
@@ -77,7 +76,6 @@ function cleanLine2(line) {
     line = line.replace(/^[^A-Z0-9<]+/, '');
     line = line.replace(/[^A-Z0-9<]+$/, '');
     line = line.replace(/[^A-Z0-9<]/g, '');
-    // digit fixes: O,B,D,S,U,I,L,Q,Z,G,T → 0,0,0,5,0,1,1,0,2,6,7
     line = replaceChars(line, {'O':'0','B':'0','D':'0','S':'5','U':'0','I':'1','L':'1','Q':'0','Z':'2','G':'6','T':'7'});
     const dm = line.match(/\d{6}/);
     if (dm) line = line.substring(dm.index);
@@ -86,7 +84,6 @@ function cleanLine2(line) {
 
 function cleanLine3(line) {
     line = line.trim().toUpperCase();
-    // remove leading artifacts including single letter + space
     line = line.replace(/^[\|\]©\[\{\}\(\)0-9\s]*/, '');
     line = line.replace(/^([A-Z]\s+)(?=[A-Z]{3,})/, '');
     line = line.replace(/[^A-Z<]+$/, '');
@@ -112,8 +109,7 @@ function extractMRZ(textLines) {
 
         const l1Valid = /^(ID|AC)/.test(l1) && l1.includes('UGA');
         const l2Valid = /^\d{6}[0-9<][MF]/.test(l2);
-        // Ensure the original string had '<<' before padding was applied
-        const l3Valid = cleaned[i+2].includes('<<') && /[A-Z]{3,}/.test(l3);
+        const l3Valid = /[A-Z]{3,}/.test(l3);
 
         if (l1Valid && l2Valid && l3Valid) return [l1, l2, l3];
     }
@@ -144,85 +140,97 @@ function fixTruncation(name) {
     return TRUNCATION_FIXES[name] || name;
 }
 
+function stripTrailingArtifacts(part) {
+    const artifacts = ['CC','CK','KC','KK','C','K','X'];
+    for (const art of artifacts) {
+        if (part.endsWith(art)) {
+            const trimmed = part.slice(0, -art.length);
+            if (COMMON_NAMES.has(trimmed) || trimmed.length >= 3) return trimmed;
+        }
+    }
+    return part;
+}
+
+function stripLeadingArtifacts(part) {
+    if (part.length <= 3) return part;
+    const chars = ['I','A','1','K','C'];
+    for (const ch of chars) {
+        if (part.startsWith(ch)) {
+            const rest = part.slice(1);
+            if (COMMON_NAMES.has(rest) || (rest.length >= 3 && COMMON_NAMES.has(fixTruncation(rest)))) {
+                return rest;
+            }
+        }
+    }
+    return part;
+}
+
+function tryInjectSeparators(line3) {
+    // If OCR dropped all << and glued names together with C/K artifacts
+    const artifacts = ['CC','CK','KC','KK','C','K','X'];
+    for (const art of artifacts) {
+        if (!line3.includes(art)) continue;
+        const pieces = line3.split(art);
+        // Must have at least 2 pieces, first must be a known surname
+        if (pieces.length < 2 || !COMMON_NAMES.has(pieces[0])) continue;
+        // All non-empty pieces should be known names or fixable
+        let allValid = true;
+        const validPieces = [];
+        for (const p of pieces) {
+            if (!p) continue;
+            const fp = fixTruncation(p);
+            if (COMMON_NAMES.has(fp) || (fp.length >= 3 && fp.length <= 12)) {
+                validPieces.push(fp);
+            } else {
+                allValid = false; break;
+            }
+        }
+        if (allValid && validPieces.length >= 2) {
+            return validPieces.join('<<');
+        }
+    }
+    return line3;
+}
+
 function parseMRZName(line3) {
     line3 = line3.replace(/<+$/, '');
 
-    // PRE-PROCESSING: Fix known OCR separator corruptions
-    line3 = line3.replace(/K<C/g, '<<<').replace(/<C/g, '<<').replace(/K</g, '<<');
-
-    // 1. Fix leading artifacts (I, A, 1) before the first valid name
-    if (line3.length > 3 && 'AI1'.includes(line3[0])) {
-        // Find the valid surname after the artifact
-        for (let len = line3.length; len > 2; len--) {
-            if (COMMON_NAMES.has(line3.slice(1, len))) {
-                line3 = line3.slice(1);
-                break;
-            }
-        }
-    }
-
-    // 2. Try to inject missing '<<' for badly glued words (e.g. AGABACCMELLISACKIRABO)
+    // 1. Try to inject missing << for badly glued words (e.g. AGABACCMELLISACKIRABO)
     if (!line3.includes('<<')) {
-        const artifacts = ['CC', 'KK', 'CK', 'KC', 'C', 'K', 'X'];
-        let resolved = false;
-        for (const art of artifacts) {
-            if (line3.includes(art)) {
-                const pieces = line3.split(art);
-                // check if the first piece is a valid surname
-                if (COMMON_NAMES.has(pieces[0])) {
-                    line3 = pieces.join('<<');
-                    resolved = true;
-                    break;
-                }
-            }
-        }
-        if (!resolved) {
-            // Still no <<, fallback to longest prefix
-            for (let len = line3.length; len > 2; len--) {
-                if (COMMON_NAMES.has(line3.slice(0,len))) return { surname: line3.slice(0,len), givenName: '', otherName: '' };
-            }
-            return { surname: line3, givenName: '', otherName: '' };
-        }
+        line3 = tryInjectSeparators(line3);
     }
 
+    // 2. If still no <<, try longest-prefix surname match
+    if (!line3.includes('<<')) {
+        // Strip leading artifact then try longest prefix
+        let test = stripLeadingArtifacts(line3);
+        for (let len = test.length; len > 2; len--) {
+            const prefix = test.slice(0, len);
+            if (COMMON_NAMES.has(prefix) || COMMON_NAMES.has(fixTruncation(prefix))) {
+                const surname = fixTruncation(prefix);
+                const restRaw = test.slice(len);
+                const rest = restRaw ? stripLeadingArtifacts(restRaw) : '';
+                if (!rest) return { surname, givenName: '', otherName: '' };
+                // Try to split rest by known artifacts or just use it
+                const given = tryInjectSeparators(rest).split(/<+/).filter(p => p.length > 1);
+                const fixedGiven = given.map(fixTruncation).filter(p => p.length > 1);
+                return { surname, givenName: fixedGiven.join(' '), otherName: '' };
+            }
+        }
+        return { surname: test, givenName: '', otherName: '' };
+    }
+
+    // 3. Normal << split
     const parts = line3.split('<<');
-    let surname = parts[0];
+    let surname = fixTruncation(stripTrailingArtifacts(stripLeadingArtifacts(parts[0])));
     let rest = parts.slice(1).join('<<').replace(/<+$/, '');
     let givenParts = rest.split('<').filter(p => p.length >= 1);
 
-    // strip leading artifact like A/I/1 from surname
-    if (surname.length > 3 && 'AI1'.includes(surname[0]) && COMMON_NAMES.has(surname.slice(1))) {
-        surname = surname.slice(1);
-    }
-
     const cleanedGiven = [];
     for (let part of givenParts) {
+        part = stripLeadingArtifacts(part);
         part = fixTruncation(part);
-        if (part.length > 3 && part.startsWith('K') && COMMON_NAMES.has(part.slice(1))) {
-            part = part.slice(1);
-        }
-        part = fixTruncation(part);
-        
-        // NEW: Artifact splitter for given names
-        const artifacts = ['CC', 'KK', 'CK', 'KC', 'C', 'K', 'X'];
-        let splitDone = false;
-        for (const art of artifacts) {
-            if (part.includes(art)) {
-                const pieces = part.split(art);
-                let allValid = true;
-                for (let p of pieces) {
-                    if (p.length > 2 && !COMMON_NAMES.has(p)) {
-                        allValid = false; break;
-                    }
-                }
-                if (allValid && pieces.length > 1) {
-                    cleanedGiven.push(...pieces.filter(p => p.length > 1));
-                    splitDone = true;
-                    break;
-                }
-            }
-        }
-        if (splitDone) continue;
+        part = stripTrailingArtifacts(part);
 
         if (COMMON_NAMES.has(part) || part.length >= 3) {
             if (part.length > 10) cleanedGiven.push(...splitMergedName(part));
@@ -288,17 +296,12 @@ function parseNIN(line1) {
     const ninStart = ugaPos + 3 + 10;
     if (ninStart >= line1.length) return null;
 
-    // Extract exactly 14 chars (standard NIN length)
     let nin = line1.substring(ninStart, ninStart + 14);
-
-    // Basic cleaning: O→0, D→0, B→0, I→1, T→7
     nin = replaceChars(nin, {'O':'0','D':'0','B':'0','I':'1','T':'7'});
 
-    // Position 0 must be C
     if (nin.length > 0 && /[G6]/.test(nin[0])) nin = 'C' + nin.slice(1);
     if (nin.length > 0 && nin[0] === 'H') nin = 'M' + nin.slice(1);
 
-    // Position 1 must be M or F
     if (nin.length > 1) {
         if (/[1I]/.test(nin[1])) nin = nin[0] + 'M' + nin.slice(2);
         if (nin[1] === 'E') nin = nin[0] + 'F' + nin.slice(2);
@@ -314,7 +317,6 @@ function parseNIN(line1) {
     }
 
     if (NIN_CORRECTIONS[nin]) return NIN_CORRECTIONS[nin];
-
     for (const c of generateNINCandidates(nin)) {
         if (NIN_CORRECTIONS[c]) return NIN_CORRECTIONS[c];
         if (VALID_NINS.has(c)) return c;
@@ -352,7 +354,6 @@ function parseMRZ(mrzLines) {
 
 // --- OCR Pipeline ---
 async function parseUgandaID(imageCanvas, cropRegion) {
-    // If user provided a crop region {x, y, w, h}, use it; else search whole image
     let sourceCanvas = imageCanvas;
     if (cropRegion) {
         const c = document.createElement('canvas');
@@ -363,30 +364,13 @@ async function parseUgandaID(imageCanvas, cropRegion) {
         console.log('[MRZ] Using user crop region:', cropRegion);
     }
 
-    let text;
-    
-    if (cropRegion) {
-        // We already have the perfectly cropped MRZ from the Drag UI!
-        // No need to slice it horizontally again. Just threshold and read.
-        console.log('[MRZ] Applying thresholding directly to user crop');
-        gentleThresholding(sourceCanvas);
-        text = await runTesseract(sourceCanvas);
-    } else {
-        // Step 1: Remove black bars
-        const noBars = removeBlackBars(sourceCanvas);
-
-        // Step 2: Find MRZ region and get text
-        const result = await findMRZRegion(noBars);
-        text = result.text;
-    }
-
+    const noBars = removeBlackBars(sourceCanvas);
+    const { crop: mrzCrop, text, desc } = await findMRZRegion(noBars);
     console.log("[OCR Output]:\n" + text);
 
-    // Step 4: Extract MRZ
     const mrz = extractMRZ(text.split('\n'));
     if (!mrz) throw new Error('MRZ not found in OCR text');
 
-    // Step 5: Parse fields
     return parseMRZ(mrz);
 }
 
@@ -453,7 +437,7 @@ async function findMRZRegion(imageCanvas) {
         console.log('[Region ' + name + '] text:\n' + text.substring(0, 100));
         const mrz = extractMRZ(text.split('\n'));
 
-        if (mrz) return { crop: ocrCanvas, text: text, desc: `region:${name}` };
+        if (mrz) return { crop: ocrCanvas, text: text, desc: `region: ${name}` };
     }
 
     const fallbackCanvas = document.createElement('canvas');

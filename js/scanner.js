@@ -124,9 +124,7 @@ function ensureCropUI() {
     container.id = 'crop-container';
     container.className = 'crop-container hidden';
     container.innerHTML = `
-        <div style="color:#fff; text-align:center; margin-bottom:8px; font-weight:600; font-size:13px; text-shadow:0 1px 3px rgba(0,0,0,0.8);">
-            Place MRZ between the green lines
-        </div>
+        <div class="crop-instruction">Place MRZ between the green lines</div>
         <div class="crop-wrapper" id="crop-wrapper">
             <img class="crop-image" id="crop-image" style="display:block; max-width:100%; max-height:60vh; object-fit:contain;">
             <div class="crop-line" id="crop-line-top" style="top:65%;"></div>
@@ -141,7 +139,6 @@ function ensureCropUI() {
     `;
     document.body.appendChild(container);
 
-    // Drag logic
     const topLine = document.getElementById('crop-line-top');
     const botLine = document.getElementById('crop-line-bottom');
     const topHandle = document.getElementById('crop-handle-top');
@@ -196,7 +193,6 @@ function ensureCropUI() {
     document.addEventListener('mouseup', onEnd);
     document.addEventListener('touchend', onEnd);
 
-    // Buttons
     document.getElementById('crop-auto-btn').addEventListener('click', () => {
         autoDetectCrop();
     });
@@ -209,8 +205,6 @@ function ensureCropUI() {
 
 function autoDetectCrop() {
     if (!lastProcessedCanvas) return;
-    const h = lastProcessedCanvas.height;
-    // Default MRZ is bottom 25%
     const topPct = 65, botPct = 90;
     document.getElementById('crop-line-top').style.top = topPct + '%';
     document.getElementById('crop-handle-top').style.top = topPct + '%';
@@ -224,9 +218,6 @@ function confirmCropAndExtract() {
     const topPct = parseFloat(document.getElementById('crop-line-top').style.top) / 100;
     const botPct = parseFloat(document.getElementById('crop-line-bottom').style.top) / 100;
 
-    // Map percentage to actual canvas coordinates
-    const scaleY = lastProcessedCanvas.height / img.naturalHeight;
-    // The displayed image may be letterboxed; compute actual rendered image height inside wrapper
     const rect = wrapper.getBoundingClientRect();
     const renderedH = img.clientHeight;
     const offsetY = (rect.height - renderedH) / 2;
@@ -281,12 +272,11 @@ async function handleFileSelect(e) {
 
         lastProcessedCanvas = canvas;
 
-        // Show crop UI instead of raw preview
         const cropUI = ensureCropUI();
         const cropImage = document.getElementById('crop-image');
         cropImage.src = canvas.toDataURL("image/jpeg", 0.85);
         cropImage.onload = () => {
-            autoDetectCrop(); // reset to defaults once image is known
+            autoDetectCrop();
             cropUI.classList.remove('hidden');
         };
 
@@ -318,7 +308,6 @@ async function runExtraction(cropRegion) {
 }
 
 function handleExtraction() {
-    // Legacy button handler — now unused, extraction happens from crop UI
     if (!lastProcessedCanvas) return;
     confirmCropAndExtract();
 }
