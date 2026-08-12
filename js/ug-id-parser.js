@@ -355,6 +355,8 @@ function parseMRZ(mrzLines) {
 // --- OCR Pipeline ---
 async function parseUgandaID(imageCanvas, cropRegion) {
     let sourceCanvas = imageCanvas;
+    let text;
+    
     if (cropRegion) {
         const c = document.createElement('canvas');
         c.width = cropRegion.w;
@@ -362,10 +364,15 @@ async function parseUgandaID(imageCanvas, cropRegion) {
         c.getContext('2d').drawImage(imageCanvas, cropRegion.x, cropRegion.y, cropRegion.w, cropRegion.h, 0, 0, cropRegion.w, cropRegion.h);
         sourceCanvas = c;
         console.log('[MRZ] Using user crop region:', cropRegion);
+        
+        gentleThresholding(sourceCanvas);
+        text = await runTesseract(sourceCanvas);
+    } else {
+        const noBars = removeBlackBars(sourceCanvas);
+        const result = await findMRZRegion(noBars);
+        text = result.text;
     }
 
-    const noBars = removeBlackBars(sourceCanvas);
-    const { crop: mrzCrop, text, desc } = await findMRZRegion(noBars);
     console.log("[OCR Output]:\n" + text);
 
     const mrz = extractMRZ(text.split('\n'));
