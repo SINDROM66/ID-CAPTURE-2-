@@ -19,10 +19,32 @@ const cardFormView = document.getElementById('card-form');
 
 let lastProcessedCanvas = null;
 let originalUploadCanvas = null;
-let cropTopY = 0;
-let cropBottomY = 0;
+let scanSide = 'front'; // default to front
 
 function initScanner() {
+    const btnFront = document.getElementById('scan-side-front');
+    const btnBack = document.getElementById('scan-side-back');
+    const uploadZoneTitle = document.getElementById('upload-zone-title');
+    const uploadZoneSubtitle = document.getElementById('upload-zone-subtitle');
+    const hintText = document.getElementById('scan-hint-text');
+
+    btnFront.addEventListener('click', () => {
+        scanSide = 'front';
+        btnFront.classList.replace('btn-outline', 'btn-primary');
+        btnBack.classList.replace('btn-primary', 'btn-outline');
+        uploadZoneTitle.textContent = 'Front of ID';
+        uploadZoneSubtitle.textContent = 'Reads personal details from front';
+        hintText.innerHTML = 'Hold phone parallel to card. The app auto-detects the fields on the front of the ID.';
+    });
+
+    btnBack.addEventListener('click', () => {
+        scanSide = 'back';
+        btnBack.classList.replace('btn-outline', 'btn-primary');
+        btnFront.classList.replace('btn-primary', 'btn-outline');
+        uploadZoneTitle.textContent = 'Back of ID';
+        uploadZoneSubtitle.textContent = 'Barcode scan — direct read';
+        hintText.innerHTML = 'Hold phone parallel to card. The app <strong>auto-detects the MRZ strip</strong> at the bottom — no need for perfect alignment.';
+    });
     triggerBtn.addEventListener('click', () => photoModal.classList.remove('hidden'));
     uploadZone.addEventListener('click', (e) => {
         if(e.target !== triggerBtn) photoModal.classList.remove('hidden');
@@ -116,126 +138,7 @@ async function convertHeicToJpeg(file) {
 // =============================================================================
 // CROP UI
 // =============================================================================
-function ensureCropUI() {
-    let container = document.getElementById('crop-container');
-    if (container) return container;
-
-    container = document.createElement('div');
-    container.id = 'crop-container';
-    container.className = 'crop-container hidden';
-    container.innerHTML = `
-        <div class="crop-instruction">Place MRZ between the green lines</div>
-        <div class="crop-wrapper" id="crop-wrapper">
-            <img class="crop-image" id="crop-image" style="display:block; max-width:100%; max-height:60vh; object-fit:contain;">
-            <div class="crop-line" id="crop-line-top" style="top:65%;"></div>
-            <div class="crop-line" id="crop-line-bottom" style="top:90%;"></div>
-            <div class="crop-handle crop-handle-top" id="crop-handle-top" style="top:65%;">↑ DRAG ↑</div>
-            <div class="crop-handle crop-handle-bottom" id="crop-handle-bottom" style="top:90%;">↓ DRAG ↓</div>
-        </div>
-        <div class="crop-controls">
-            <button id="crop-auto-btn" class="btn-secondary" style="background:rgba(255,255,255,0.2); color:#fff; border:1px solid rgba(255,255,255,0.3); padding:14px 24px; border-radius:10px; font-size:16px; font-weight:600; cursor:pointer;">Auto-Detect</button>
-            <button id="crop-confirm-btn" class="btn-primary" style="background:#00e676; color:#000; padding:14px 24px; border-radius:10px; font-size:16px; font-weight:600; border:none; cursor:pointer;">Confirm & Extract</button>
-        </div>
-    `;
-    document.body.appendChild(container);
-
-    const topLine = document.getElementById('crop-line-top');
-    const botLine = document.getElementById('crop-line-bottom');
-    const topHandle = document.getElementById('crop-handle-top');
-    const botHandle = document.getElementById('crop-handle-bottom');
-    const wrapper = document.getElementById('crop-wrapper');
-    let dragging = null;
-
-    function getY(e) {
-        return e.touches ? e.touches[0].clientY : e.clientY;
-    }
-
-    function setLines(topPct, botPct) {
-        topLine.style.top = topPct + '%';
-        topHandle.style.top = topPct + '%';
-        botLine.style.top = botPct + '%';
-        botHandle.style.top = botPct + '%';
-    }
-
-    function onStart(e, which) {
-        dragging = which;
-        e.preventDefault();
-        e.stopPropagation();
-    }
-
-    function onMove(e) {
-        if (!dragging) return;
-        const rect = wrapper.getBoundingClientRect();
-        let y = ((getY(e) - rect.top) / rect.height) * 100;
-        y = Math.max(5, Math.min(95, y));
-
-        const other = dragging === 'top' ?
-            parseFloat(botLine.style.top) :
-            parseFloat(topLine.style.top);
-
-        if (dragging === 'top' && y < other - 8) setLines(y, other);
-        if (dragging === 'bottom' && y > other + 8) setLines(other, y);
-    }
-
-    function onEnd() { dragging = null; }
-
-    [topLine, topHandle].forEach(el => {
-        el.addEventListener('mousedown', e => onStart(e, 'top'));
-        el.addEventListener('touchstart', e => onStart(e, 'top'), { passive: false });
-    });
-    [botLine, botHandle].forEach(el => {
-        el.addEventListener('mousedown', e => onStart(e, 'bottom'));
-        el.addEventListener('touchstart', e => onStart(e, 'bottom'), { passive: false });
-    });
-
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('touchmove', onMove, { passive: false });
-    document.addEventListener('mouseup', onEnd);
-    document.addEventListener('touchend', onEnd);
-
-    document.getElementById('crop-auto-btn').addEventListener('click', () => {
-        autoDetectCrop();
-    });
-    document.getElementById('crop-confirm-btn').addEventListener('click', () => {
-        confirmCropAndExtract();
-    });
-
-    return container;
-}
-
-function autoDetectCrop() {
-    if (!lastProcessedCanvas) return;
-    const topPct = 65, botPct = 90;
-    document.getElementById('crop-line-top').style.top = topPct + '%';
-    document.getElementById('crop-handle-top').style.top = topPct + '%';
-    document.getElementById('crop-line-bottom').style.top = botPct + '%';
-    document.getElementById('crop-handle-bottom').style.top = botPct + '%';
-}
-
-function confirmCropAndExtract() {
-    const wrapper = document.getElementById('crop-wrapper');
-    const img = document.getElementById('crop-image');
-    const topPct = parseFloat(document.getElementById('crop-line-top').style.top) / 100;
-    const botPct = parseFloat(document.getElementById('crop-line-bottom').style.top) / 100;
-
-    const rect = wrapper.getBoundingClientRect();
-    const renderedH = img.clientHeight;
-    const offsetY = (rect.height - renderedH) / 2;
-
-    const y1 = Math.max(0, Math.round(((topPct * rect.height) - offsetY) / renderedH * lastProcessedCanvas.height));
-    const y2 = Math.min(lastProcessedCanvas.height, Math.round(((botPct * rect.height) - offsetY) / renderedH * lastProcessedCanvas.height));
-
-    const cropRegion = {
-        x: 0,
-        y: Math.min(y1, y2),
-        w: lastProcessedCanvas.width,
-        h: Math.abs(y2 - y1)
-    };
-
-    console.log('[Crop] Region:', cropRegion);
-    document.getElementById('crop-container').classList.add('hidden');
-    runExtraction(cropRegion);
-}
+// Crop UI removed to automate extraction
 
 // =============================================================================
 // MAIN FILE HANDLER
@@ -271,14 +174,9 @@ async function handleFileSelect(e) {
         canvas.getContext('2d').drawImage(imageSource, 0, 0, width, height);
 
         lastProcessedCanvas = canvas;
-
-        const cropUI = ensureCropUI();
-        const cropImage = document.getElementById('crop-image');
-        cropImage.src = canvas.toDataURL("image/jpeg", 0.85);
-        cropImage.onload = () => {
-            autoDetectCrop();
-            cropUI.classList.remove('hidden');
-        };
+        
+        // Auto-extract immediately using Tesseract with grayscale/threshold filter
+        runExtraction();
 
     } catch (err) {
         console.error(err);
@@ -287,14 +185,20 @@ async function handleFileSelect(e) {
     }
 }
 
-async function runExtraction(cropRegion) {
+async function runExtraction() {
     cardUploadView.classList.add('hidden');
     cardProgressView.classList.remove('hidden');
     errorText.classList.add('hidden');
 
     try {
         await new Promise(r => setTimeout(r, 100));
-        const parsedRecord = await parseUgandaID(lastProcessedCanvas, cropRegion);
+        let parsedRecord;
+        if (scanSide === 'front') {
+            parsedRecord = await parseFrontUgandaID(lastProcessedCanvas);
+        } else {
+            parsedRecord = await parseUgandaID(lastProcessedCanvas, null);
+        }
+        
         populateForm(parsedRecord);
         cardProgressView.classList.add('hidden');
         cardFormView.classList.remove('hidden');
@@ -309,7 +213,7 @@ async function runExtraction(cropRegion) {
 
 function handleExtraction() {
     if (!lastProcessedCanvas) return;
-    confirmCropAndExtract();
+    runExtraction();
 }
 
 function resetScanner() {

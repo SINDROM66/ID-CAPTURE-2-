@@ -453,14 +453,17 @@ async function findMRZRegion(imageCanvas) {
     const fCtx = fallbackCanvas.getContext('2d');
     fCtx.drawImage(imageCanvas, 0, Math.floor(h * 0.5), w, Math.floor(h * 0.5), 0, 0, w, Math.floor(h * 0.5));
     gentleThresholding(fallbackCanvas);
-    const fallbackText = await runTesseract(fallbackCanvas);
+    const fallbackText = await runTesseract(fallbackCanvas, false);
     return { crop: fallbackCanvas, text: fallbackText, desc: 'fallback:bottom50' };
 }
 
-async function runTesseract(canvas) {
+async function runTesseract(canvas, isFront = false) {
+    const whitelist = isFront 
+        ? 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789<>. -/()' 
+        : 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<>';
     const result = await Tesseract.recognize(canvas, 'eng', {
-        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<>',
-        psm: 6
+        tessedit_char_whitelist: whitelist,
+        psm: isFront ? 3 : 6 // PSM 3 is better for full pages, 6 for uniform blocks
     });
     return result.data.text;
 }
@@ -515,4 +518,113 @@ function gentleThresholding(canvas) {
     }
     ctx.putImageData(imgData, 0, 0);
     return canvas;
+}
+
+// =============================================================================
+// FRONT OF ID SCANNER (LABEL-BASED PARSING)
+// =============================================================================
+
+async function parseFrontUgandaID(imageCanvas) {
+    // 1. Remove black bars
+    const noBars = removeBlackBars(imageCanvas);
+    
+    // 2. Grayscale & Thresholding (applies to whole image to remove background noise)
+    const ocrCanvas = document.createElement('canvas');
+    ocrCanvas.width = noBars.width;
+    ocrCanvas.height = noBars.height;
+    ocrCanvas.getContext('2d').drawImage(noBars, 0, 0);
+    
+    // Apply our robust Tesseract-optimized thresholding
+    gentleThresholding(ocrCanvas);
+    
+    // 3. OCR on full image (pass true for isFront flag)
+    const text = await runTesseract(ocrCanvas, true);
+    console.log("[Front OCR Output]:\n" + text);
+    
+    // 4. Parse Labels
+    return extractFrontDetails(text);
+}
+
+function extractFrontDetails(text) {
+    const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+    
+    let record = {
+        surname: '',
+        givenName: '',
+        otherName: '',
+        dob: '',
+        sex: '',
+        nin: '',
+        nationality: 'UGA'
+    };
+    
+    // Helper to find the next valid non-label line after a specific label
+    const findValueAfterLabel = (labelRegex, lines, maxLookahead = 2) => {
+        for (let i = 0; i < lines.length; i++) {
+            if (labelRegex.test(lines[i])) {
+                // First check if value is on the same line (e.g. "Surname SMITH")
+                const remaining = lines[i].replace(labelRegex, '').trim();
+                if (remaining.length > 2) return remaining;
+                
+                // Otherwise look at the next few lines
+                for (let j = 1; j <= maxLookahead && i + j < lines.length; j++) {
+                    const candidate = lines[i + j].trim();
+                    // Ignore if it's another label or junk
+                    if (candidate.length < 2) continue;
+                    if (/^(SURNAME|GIVEN|DATE|SEX|NATIONALITY|CARD|NIN|SIGNATURE)/i.test(candidate)) continue;
+                    return candidate;
+                }
+            }
+        }
+        return '';
+    };
+
+    // Extract Surname
+    let surname = findValueAfterLabel(/(?:SURNAME|SURNAM|URNAME)s?/i, lines);
+    record.surname = surname.replace(/[^A-Z]/gi, '').toUpperCase();
+    
+    // Extract Given Name
+    let givenName = findValueAfterLabel(/(?:GIVEN|GIVEN NAME|GIVEN NAME\(S\)|NAME\(S\))/i, lines);
+    record.givenName = givenName.replace(/[^A-Z\s]/gi, '').toUpperCase().trim();
+    
+    // Extract DOB
+    let dobLine = findValueAfterLabel(/(?:DATE OF BIRTH|DATE OF BIR|DOB|DATE)/i, lines);
+    // Find format like 14.12.1990 or 14-12-1990 or 14/12/1990
+    const dobMatch = dobLine.match(/(\d{2})[\.\-\/](\d{2})[\.\-\/](\d{4})/);
+    if (dobMatch) {
+        record.dob = `${dobMatch[3]}-${dobMatch[2]}-${dobMatch[1]}`; // YYYY-MM-DD
+    } else {
+        // Fallback: look anywhere in the text for a date
+        const anyDate = text.match(/(\d{2})[\.\-\/](\d{2})[\.\-\/](\d{4})/);
+        if (anyDate) {
+            record.dob = `${anyDate[3]}-${anyDate[2]}-${anyDate[1]}`;
+        }
+    }
+    
+    // Extract Sex
+    let sexLine = findValueAfterLabel(/(?:SEX)/i, lines);
+    if (sexLine.toUpperCase().includes('M') || /^M/.test(sexLine)) record.sex = 'Male';
+    else if (sexLine.toUpperCase().includes('F') || /^F/.test(sexLine)) record.sex = 'Female';
+    else {
+        // Fallback search
+        if (/\b[M]\b/i.test(text)) record.sex = 'Male';
+        else if (/\b[F]\b/i.test(text)) record.sex = 'Female';
+    }
+    
+    // Extract NIN
+    let ninLine = findValueAfterLabel(/(?:NIN|NATIONAL IDENTIFICATION NUMBER)/i, lines, 3);
+    const ninMatch = ninLine.match(/(C[MF][A-Z0-9]{12})/);
+    if (ninMatch) {
+        record.nin = ninMatch[1];
+    } else {
+        // Global search for NIN pattern
+        const globalNinMatch = text.match(/\b(C[MF][A-Z0-9]{12})\b/);
+        if (globalNinMatch) record.nin = globalNinMatch[1];
+    }
+    
+    if (!record.nin || !record.surname) {
+        throw new Error("Could not confidently extract data from the front of the ID. Please ensure the image is well-lit.");
+    }
+    
+    return record;
 }

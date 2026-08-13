@@ -58,7 +58,7 @@
                 
                 <!-- Mode Toggle Row -->
                 <div class="mode-toggle-row">
-                    <button id="nav-scan-btn" class="mode-btn active">Scan Barcode</button>
+                    <button id="nav-scan-btn" class="mode-btn active">Scan ID</button>
                     <button id="nav-manual-btn" class="mode-btn">Enter Data Manually</button>
                 </div>
 
@@ -66,13 +66,18 @@
                 <div id="card-barcode-upload" class="card">
                     <div class="card-title">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5v14M7 5v14M11 5v14M15 5v14M19 5v14M23 5v14"></path></svg>
-                        Scan Barcode
+                        Scan ID Card
+                    </div>
+                    
+                    <div style="display: flex; gap: 8px; margin-top: 12px; margin-bottom: 12px;">
+                        <button id="scan-side-front" class="btn btn-primary" style="flex: 1; padding: 8px; font-size: 13px;">Front (Details)</button>
+                        <button id="scan-side-back" class="btn btn-outline" style="flex: 1; padding: 8px; font-size: 13px;">Back (MRZ)</button>
                     </div>
                     
                     <div id="upload-zone" class="uzone" style="margin-top: 12px; margin-bottom: 12px; cursor: pointer;">
                         <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="2" style="margin-bottom: 8px;"><rect x="3" y="4" width="18" height="16" rx="2" ry="2"></rect><line x1="7" y1="8" x2="11" y2="8"></line><line x1="7" y1="12" x2="17" y2="12"></line><line x1="7" y1="16" x2="17" y2="16"></line></svg>
-                        <div style="font-weight: 700; color: var(--primary);">Back of ID</div>
-                        <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Barcode scan — direct read</div>
+                        <div id="upload-zone-title" style="font-weight: 700; color: var(--primary);">Front of ID</div>
+                        <div id="upload-zone-subtitle" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Reads personal details from front</div>
                     </div>
                     
                     <button id="trigger-upload" class="btn btn-outline" style="width: 100%; margin-bottom: 12px;">Choose / Take Photo</button>
@@ -83,7 +88,7 @@
 
                     <div class="hint" style="margin-bottom: 16px;">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink: 0;"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
-                        <div>Hold phone parallel to card. The app <strong>auto-detects the MRZ strip</strong> at the bottom — no need for perfect alignment.</div>
+                        <div id="scan-hint-text">Hold phone parallel to card. The app auto-detects the fields on the front of the ID.</div>
                     </div>
 
                     <div class="action-row">
@@ -103,7 +108,7 @@
                     <div style="text-align: center; padding: 30px 20px 20px;">
                         <div class="spinner"></div>
                     </div>
-                    <div style="color: var(--primary); font-weight: 600;" id="progress-text">Reading back of ID card (MRZ)...</div>
+                    <div style="color: var(--primary); font-weight: 600;" id="progress-text">Reading ID card...</div>
                     <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Running Tesseract worker</div>
                 </div>
 
