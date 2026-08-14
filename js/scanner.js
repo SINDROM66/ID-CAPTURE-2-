@@ -19,7 +19,7 @@ const cardFormView = document.getElementById('card-form');
 
 let lastProcessedCanvas = null;
 let originalUploadCanvas = null;
-let scanSide = 'front'; // default to front
+let scanSide = 'back'; // default to back
 
 // Live Scanner Variables
 let liveStream = null;
