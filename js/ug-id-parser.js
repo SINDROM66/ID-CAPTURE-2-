@@ -642,13 +642,29 @@ function preprocessBack(canvas) {
   return scaled;
 }
 
+function estimateTextSlope(lines) {
+  const candidates = lines
+    .filter(l => l.text.length > 4)
+    .sort((a, b) => (b.x1 - b.x0) - (a.x1 - a.x0))
+    .slice(0, 6);
+  if (candidates.length < 2) return 0;
+  let sumAngle = 0;
+  candidates.forEach(l => {
+    sumAngle += Math.atan2(l.y1 - l.y0, l.x1 - l.x0);
+  });
+  return sumAngle / candidates.length; 
+}
+
+function isOnSameBaseline(anchor, candidate, slope, baseTolerance) {
+  const projectedY = anchor.cy + Math.tan(slope) * (candidate.cx - anchor.cx);
+  return Math.abs(candidate.cy - projectedY) < baseTolerance;
+}
+
 // ─── SPATIAL FRONT PARSER ───
 async function parseFrontUgandaID(imageCanvas) {
   const noBars = removeBlackBars(imageCanvas);
-  // Assuming suppressGlare helper exists based on instructions
   if (typeof suppressGlare === 'function') suppressGlare(noBars);
   
-  // Note: we need the native Tesseract object for bounding boxes
   const worker = await getTesseractWorker('eng');
   const result = await worker.recognize(noBars, {
     tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789<>. -/()',
@@ -669,18 +685,30 @@ async function parseFrontUgandaID(imageCanvas) {
     }))
     .sort((a, b) => a.cy - b.cy || a.cx - b.cx);
 
+  const slope = estimateTextSlope(lines);
+  
+  // Call updateTiltGuide (from scanner.js) to show UI feedback. If it returns false, reject frame.
+  if (typeof updateTiltGuide === 'function') {
+    if (!updateTiltGuide(slope)) {
+      throw new Error("Card is too tilted");
+    }
+  }
+
+  const baseTolerance = 0.04 + (Math.abs(slope) * 0.15);
+
   const record = { nationality: 'UGA' };
 
-  function extractRightOf(anchorRegex, yTolerance = 0.06, xMin = 0.35) {
+  function extractRightOf(anchorRegex, lines, slope, baseTolerance = 0.05) {
     for (let i = 0; i < lines.length; i++) {
       if (anchorRegex.test(lines[i].text.toUpperCase())) {
+        const anchor = lines[i];
         const candidates = lines.filter(l => 
-          l !== lines[i] &&
-          Math.abs(l.cy - lines[i].cy) < yTolerance &&
-          l.cx > xMin
+          l !== anchor && 
+          l.cx > 0.30 && 
+          isOnSameBaseline(anchor, l, slope, baseTolerance)
         );
         if (candidates.length) {
-          return candidates.map(c => c.text).join(' ').toUpperCase();
+          return candidates.sort((a, b) => a.cx - b.cx).map(c => c.text).join(' ').toUpperCase();
         }
         if (i + 1 < lines.length) return lines[i+1].text.toUpperCase();
       }
@@ -688,8 +716,8 @@ async function parseFrontUgandaID(imageCanvas) {
     return '';
   }
 
-  record.surname = extractRightOf(/SURNAME|SURNAM|URNAME/);
-  record.givenName = extractRightOf(/GIVEN\s*NAME|GIVEN|NAME\(S\)/);
+  record.surname = extractRightOf(/SURNAME|SURNAM|URNAME/, lines, slope, baseTolerance);
+  record.givenName = extractRightOf(/GIVEN\s*NAME|GIVEN|NAME\(S\)/, lines, slope, baseTolerance);
   
   const givenIdx = lines.findIndex(l => /GIVEN\s*NAME/i.test(l.text));
   if (givenIdx >= 0 && givenIdx + 1 < lines.length && !record.surname) {

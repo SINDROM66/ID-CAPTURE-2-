@@ -119,10 +119,40 @@ function stopLiveScanner() {
 const frontBuffer = new TemporalBuffer(5, 3);
 const backBuffer = new TemporalBuffer(5, 3);
 
+function updateTiltGuide(slope) {
+  const guide = document.getElementById('live-scan-status');
+  if (!guide) return true;
+  
+  const deg = slope * (180 / Math.PI);
+  if (Math.abs(deg) > 12) {
+    guide.style.color = '#ff5252'; // red
+    guide.textContent = `Rotate card ${deg > 0 ? 'clockwise' : 'counter-clockwise'} — ${Math.abs(deg).toFixed(0)}°`;
+    return false; // Reject frame
+  } else if (Math.abs(deg) > 6) {
+    guide.style.color = '#ffd740'; // amber
+    guide.textContent = 'Almost straight... hold steady';
+    return true; 
+  } else {
+    guide.style.color = '#00e676'; // green
+    guide.textContent = 'Scanning automatically...';
+    return true;
+  }
+}
+
+let lastProcessTime = 0;
+const MIN_INTERVAL_LOW_END = 1200; // ms
+
 async function processVideoFrame() {
   if (!isScanning || isProcessingFrame) return;
   const video = document.getElementById('camera-stream');
   if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
+
+  const now = performance.now();
+  const isLowEnd = navigator.hardwareConcurrency <= 4; 
+  if (isLowEnd && (now - lastProcessTime) < MIN_INTERVAL_LOW_END) {
+    requestAnimationFrame(processVideoFrame);
+    return;
+  }
 
   isProcessingFrame = true;
   const statusText = document.getElementById('live-scan-status');
@@ -134,8 +164,14 @@ async function processVideoFrame() {
     canvas.height = video.videoHeight;
     canvas.getContext('2d').drawImage(video, 0, 0);
 
-    // 2. Auto-detect side
-    const detection = await detectCardSide(canvas);
+    // 2. Downscale probe for faster detection
+    const probeCanvas = document.createElement('canvas');
+    probeCanvas.width = Math.floor(canvas.width * 0.5);
+    probeCanvas.height = Math.floor(canvas.height * 0.5);
+    probeCanvas.getContext('2d').drawImage(canvas, 0, 0, probeCanvas.width, probeCanvas.height);
+
+    // 3. Auto-detect side
+    const detection = await detectCardSide(probeCanvas);
 
     if (detection.side === 'back') {
       if (statusText) statusText.textContent = 'Back detected — reading MRZ...';
@@ -194,6 +230,7 @@ async function processVideoFrame() {
     console.log('Frame rejected:', err.message);
   } finally {
     isProcessingFrame = false;
+    lastProcessTime = performance.now();
   }
 }
 
