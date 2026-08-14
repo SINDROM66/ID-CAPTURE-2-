@@ -602,3 +602,9 @@ body {
 
 /* Override old center label if it exists */
 .crop-label { display: none !important; }
+
+@keyframes scan {
+    0% { transform: translateY(0); opacity: 0.8; }
+    50% { transform: translateY(246px); opacity: 1; }
+    100% { transform: translateY(0); opacity: 0.8; }
+}

@@ -69,10 +69,15 @@
                         Scan ID Card
                     </div>
                     
+                    <div style="display: flex; gap: 8px; margin-top: 12px; margin-bottom: 12px;">
+                        <button id="scan-side-front" class="btn btn-primary" style="flex: 1; padding: 8px; font-size: 13px;">Front (Details)</button>
+                        <button id="scan-side-back" class="btn btn-outline" style="flex: 1; padding: 8px; font-size: 13px;">Back (MRZ)</button>
+                    </div>
+                    
                     <div id="upload-zone" class="uzone" style="margin-top: 12px; margin-bottom: 12px; cursor: pointer;">
                         <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="2" style="margin-bottom: 8px;"><rect x="3" y="4" width="18" height="16" rx="2" ry="2"></rect><line x1="7" y1="8" x2="11" y2="8"></line><line x1="7" y1="12" x2="17" y2="12"></line><line x1="7" y1="16" x2="17" y2="16"></line></svg>
-                        <div id="upload-zone-title" style="font-weight: 700; color: var(--primary);">Back of ID (MRZ)</div>
-                        <div id="upload-zone-subtitle" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Reads data from the MRZ code</div>
+                        <div id="upload-zone-title" style="font-weight: 700; color: var(--primary);">Front of ID</div>
+                        <div id="upload-zone-subtitle" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Reads personal details from front</div>
                     </div>
                     
                     <button id="trigger-upload" class="btn btn-outline" style="width: 100%; margin-bottom: 12px;">Choose / Take Photo</button>
@@ -83,7 +88,7 @@
 
                     <div class="hint" style="margin-bottom: 16px;">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink: 0;"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
-                        <div id="scan-hint-text">Hold phone parallel to card. The app auto-detects the MRZ on the back of the ID.</div>
+                        <div id="scan-hint-text">Hold phone parallel to card. The app auto-detects the fields on the front of the ID.</div>
                     </div>
 
                     <div class="action-row">
@@ -213,6 +218,37 @@
             
             <input type="file" id="input-camera" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" capture="environment" style="display: none;">
             <input type="file" id="input-gallery" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" style="display: none;">
+        </div>
+    </div>
+
+    <!-- Live Scanner Modal -->
+    <div id="live-scanner-modal" class="hidden" style="position: fixed; inset: 0; background: #000; z-index: 2000; display: flex; flex-direction: column;">
+        <div style="position: relative; flex: 1; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+            <video id="camera-stream" autoplay playsinline muted style="position: absolute; min-width: 100%; min-height: 100%; object-fit: cover;"></video>
+            
+            <!-- Scanner Overlay -->
+            <div id="scanner-overlay" style="position: absolute; inset: 0; pointer-events: none; display: flex; align-items: center; justify-content: center; flex-direction: column;">
+                <div style="position: absolute; inset: 0; box-shadow: inset 0 0 0 9999px rgba(0,0,0,0.6);"></div>
+                
+                <div style="position: relative; width: 90%; height: 250px; border: 2px solid #00e676; border-radius: 12px; overflow: hidden; background: transparent; z-index: 10;">
+                    <!-- Sweeping line animation -->
+                    <div id="scanner-laser" class="laser-animation" style="position: absolute; top: 0; left: 0; width: 100%; height: 2px; background: #00e676; box-shadow: 0 0 10px #00e676;"></div>
+                    
+                    <!-- Corner brackets -->
+                    <div style="position: absolute; top: 0; left: 0; width: 30px; height: 30px; border-top: 4px solid #fff; border-left: 4px solid #fff; border-top-left-radius: 12px;"></div>
+                    <div style="position: absolute; top: 0; right: 0; width: 30px; height: 30px; border-top: 4px solid #fff; border-right: 4px solid #fff; border-top-right-radius: 12px;"></div>
+                    <div style="position: absolute; bottom: 0; left: 0; width: 30px; height: 30px; border-bottom: 4px solid #fff; border-left: 4px solid #fff; border-bottom-left-radius: 12px;"></div>
+                    <div style="position: absolute; bottom: 0; right: 0; width: 30px; height: 30px; border-bottom: 4px solid #fff; border-right: 4px solid #fff; border-bottom-right-radius: 12px;"></div>
+                </div>
+                
+                <div style="position: relative; margin-top: 24px; color: #fff; font-weight: 600; text-align: center; text-shadow: 0 1px 4px rgba(0,0,0,0.8); z-index: 10;">
+                    Align MRZ within frame<br>
+                    <span id="live-scan-status" style="font-size: 12px; opacity: 0.8; font-weight: normal;">Scanning automatically...</span>
+                </div>
+            </div>
+        </div>
+        <div style="padding: 20px; background: #111; text-align: center; position: relative;">
+            <button id="btn-cancel-scanner" class="btn btn-outline" style="width: 100%; color: #fff; border-color: #555;">Cancel</button>
         </div>
     </div>
 

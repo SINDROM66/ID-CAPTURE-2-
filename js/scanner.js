@@ -19,22 +19,152 @@ const cardFormView = document.getElementById('card-form');
 
 let lastProcessedCanvas = null;
 let originalUploadCanvas = null;
+let scanSide = 'front'; // default to front
+
+// Live Scanner Variables
+let liveStream = null;
+let isScanning = false;
+let isProcessingFrame = false;
+let scanInterval = null;
 
 function initScanner() {
+    const btnFront = document.getElementById('scan-side-front');
+    const btnBack = document.getElementById('scan-side-back');
+    const uploadZoneTitle = document.getElementById('upload-zone-title');
+    const uploadZoneSubtitle = document.getElementById('upload-zone-subtitle');
+    const hintText = document.getElementById('scan-hint-text');
+
+    btnFront.addEventListener('click', () => {
+        scanSide = 'front';
+        btnFront.classList.replace('btn-outline', 'btn-primary');
+        btnBack.classList.replace('btn-primary', 'btn-outline');
+        uploadZoneTitle.textContent = 'Front of ID';
+        uploadZoneSubtitle.textContent = 'Reads personal details from front';
+        hintText.innerHTML = 'Hold phone parallel to card. The app auto-detects the fields on the front of the ID.';
+    });
+
+    btnBack.addEventListener('click', () => {
+        scanSide = 'back';
+        btnBack.classList.replace('btn-outline', 'btn-primary');
+        btnFront.classList.replace('btn-primary', 'btn-outline');
+        uploadZoneTitle.textContent = 'Back of ID (MRZ)';
+        uploadZoneSubtitle.textContent = 'Reads data from the MRZ code';
+        hintText.innerHTML = 'Hold phone parallel to card. The app <strong>auto-detects the MRZ strip</strong> at the bottom.';
+    });
+
     triggerBtn.addEventListener('click', () => photoModal.classList.remove('hidden'));
     uploadZone.addEventListener('click', (e) => {
         if(e.target !== triggerBtn) photoModal.classList.remove('hidden');
     });
 
-    btnCamera.addEventListener('click', () => { photoModal.classList.add('hidden'); fileInputCamera.click(); });
+    btnCamera.addEventListener('click', () => { 
+        photoModal.classList.add('hidden'); 
+        startLiveScanner(); 
+    });
     btnGallery.addEventListener('click', () => { photoModal.classList.add('hidden'); fileInputGallery.click(); });
     btnCancelModal.addEventListener('click', () => photoModal.classList.add('hidden'));
     photoModal.addEventListener('click', (e) => { if (e.target === photoModal) photoModal.classList.add('hidden'); });
 
-    fileInputCamera.addEventListener('change', handleFileSelect);
+    document.getElementById('btn-cancel-scanner').addEventListener('click', stopLiveScanner);
+
     fileInputGallery.addEventListener('change', handleFileSelect);
     extractBtn.addEventListener('click', handleExtraction);
     resetBtn.addEventListener('click', resetScanner);
+}
+
+// =============================================================================
+// LIVE SCANNER LOGIC
+// =============================================================================
+async function startLiveScanner() {
+    const video = document.getElementById('camera-stream');
+    const modal = document.getElementById('live-scanner-modal');
+    const statusText = document.getElementById('live-scan-status');
+    
+    try {
+        liveStream = await navigator.mediaDevices.getUserMedia({ 
+            video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } 
+        });
+        video.srcObject = liveStream;
+        modal.classList.remove('hidden');
+        isScanning = true;
+        isProcessingFrame = false;
+        statusText.textContent = 'Scanning automatically...';
+        
+        // Wait for video to start playing before capturing frames
+        video.onloadedmetadata = () => {
+            video.play();
+            // Start frame capture loop (every 600ms)
+            scanInterval = setInterval(processVideoFrame, 600);
+        };
+    } catch (err) {
+        console.error("Camera access failed:", err);
+        alert("Could not access camera. Please ensure permissions are granted or use Gallery upload.");
+        modal.classList.add('hidden');
+    }
+}
+
+function stopLiveScanner() {
+    isScanning = false;
+    clearInterval(scanInterval);
+    const modal = document.getElementById('live-scanner-modal');
+    modal.classList.add('hidden');
+    
+    if (liveStream) {
+        liveStream.getTracks().forEach(track => track.stop());
+        liveStream = null;
+    }
+}
+
+async function processVideoFrame() {
+    if (!isScanning || isProcessingFrame) return;
+    
+    const video = document.getElementById('camera-stream');
+    if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
+    
+    isProcessingFrame = true;
+    const statusText = document.getElementById('live-scan-status');
+    
+    try {
+        // Create an offscreen canvas to capture the current frame
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        
+        // If it's the front, we might want to process the whole image. 
+        // But for MRZ (Back), we only want the bottom part where the MRZ is.
+        // Actually, let's just send the whole canvas to runLiveExtraction
+        // and let parseUgandaID do the cropping if needed.
+        
+        let parsedRecord;
+        if (scanSide === 'front') {
+            parsedRecord = await parseFrontUgandaID(canvas);
+        } else {
+            // We pass the whole canvas, ug-id-parser will find MRZ
+            parsedRecord = await parseUgandaID(canvas, null);
+        }
+        
+        // If successful, stop scanner and populate form!
+        stopLiveScanner();
+        
+        // Play success beep
+        const audio = new Audio('data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU'+Array(1e3).join('123')); 
+        audio.play().catch(e => {}); // Ignore if blocked
+        
+        lastProcessedCanvas = canvas;
+        populateForm(parsedRecord);
+        
+        cardUploadView.classList.add('hidden');
+        cardProgressView.classList.add('hidden');
+        cardFormView.classList.remove('hidden');
+        
+    } catch (err) {
+        // OCR failed (e.g. no MRZ found), silently ignore and try next frame
+        console.log("Live scan frame rejected:", err.message);
+    } finally {
+        isProcessingFrame = false;
+    }
 }
 
 // =============================================================================
@@ -168,7 +298,12 @@ async function runExtraction() {
 
     try {
         await new Promise(r => setTimeout(r, 100));
-        let parsedRecord = await parseUgandaID(lastProcessedCanvas, null);
+        let parsedRecord;
+        if (scanSide === 'front') {
+            parsedRecord = await parseFrontUgandaID(lastProcessedCanvas);
+        } else {
+            parsedRecord = await parseUgandaID(lastProcessedCanvas, null);
+        }
         
         populateForm(parsedRecord);
         cardProgressView.classList.add('hidden');
