@@ -117,137 +117,109 @@ function extractMRZ(textLines) {
 }
 
 // --- Name Parsing ---
-function splitMergedName(name) {
-    let best = null, bestScore = 0;
-    for (let i = 3; i < name.length - 2; i++) {
-        const p1 = name.slice(0, i), p2 = name.slice(i);
-        const score = (COMMON_NAMES.has(p1)?10:0) + (COMMON_NAMES.has(p2)?10:0);
-        if (score === 20) return [p1, p2];
-        if (score > bestScore) { bestScore = score; best = [p1, p2]; }
-    }
-    for (let i = 3; i < name.length - 4; i++) {
-        for (let j = i + 2; j < name.length - 2; j++) {
-            const pts = [name.slice(0,i), name.slice(i,j), name.slice(j)];
-            const score = pts.reduce((a,p)=>a+(COMMON_NAMES.has(p)?10:0),0);
-            if (score >= 20) return pts;
-            if (score > bestScore) { bestScore = score; best = pts; }
-        }
-    }
-    return best || [name];
-}
-
-function fixTruncation(name) {
-    return TRUNCATION_FIXES[name] || name;
-}
-
-function stripTrailingArtifacts(part) {
-    const artifacts = ['CC','CK','KC','KK','C','K','X'];
-    for (const art of artifacts) {
-        if (part.endsWith(art)) {
-            const trimmed = part.slice(0, -art.length);
-            if (COMMON_NAMES.has(trimmed) || trimmed.length >= 3) return trimmed;
-        }
-    }
-    return part;
-}
-
-function stripLeadingArtifacts(part) {
+function stripArtifacts(part) {
     if (part.length <= 3) return part;
-    const chars = ['I','A','1','K','C'];
-    for (const ch of chars) {
-        if (part.startsWith(ch)) {
-            const rest = part.slice(1);
-            if (COMMON_NAMES.has(rest) || (rest.length >= 3 && COMMON_NAMES.has(fixTruncation(rest)))) {
-                return rest;
-            }
-        }
-    }
-    return part;
+    let p = part;
+    if (/^[I1C]/.test(p)) p = p.slice(1);
+    if (/C{1,2}$|K{1,2}$|X{1,2}$/.test(p)) p = p.replace(/C{1,2}$|K{1,2}$|X{1,2}$/, '');
+    return p;
 }
 
-function tryInjectSeparators(line3) {
-    // If OCR dropped all << and glued names together with C/K artifacts
-    const artifacts = ['CC','CK','KC','KK','C','K','X'];
-    for (const art of artifacts) {
-        if (!line3.includes(art)) continue;
-        const pieces = line3.split(art);
-        // Must have at least 2 pieces, first must be a known surname
-        if (pieces.length < 2 || !COMMON_NAMES.has(pieces[0])) continue;
-        // All non-empty pieces should be known names or fixable
-        let allValid = true;
-        const validPieces = [];
-        for (const p of pieces) {
-            if (!p) continue;
-            const fp = fixTruncation(p);
-            if (COMMON_NAMES.has(fp) || (fp.length >= 3 && fp.length <= 12)) {
-                validPieces.push(fp);
-            } else {
-                allValid = false; break;
+function isValidName(part) {
+    if (part.length <= 1) return false;
+    if (/^[KLCXSP]{2,}$/.test(part) && !COMMON_NAMES.has(part)) return false;
+    return true;
+}
+
+function extractNamesByDictionary(str) {
+    const found = [];
+    let s = str;
+    const allKnown = [...Array.from(COMMON_NAMES), ...Object.keys(TRUNCATION_FIXES)];
+    
+    while (s.length > 2) {
+        let match = null;
+        for (const name of allKnown) {
+            let idx = s.indexOf(name);
+            if (idx !== -1) {
+                if (!match || idx < match.idx || (idx === match.idx && name.length > match.name.length)) {
+                    match = {name, idx};
+                }
             }
         }
-        if (allValid && validPieces.length >= 2) {
-            return validPieces.join('<<');
+        if (match) {
+            if (match.idx > 3) {
+                let skipped = s.slice(0, match.idx);
+                let cleaned = stripArtifacts(skipped);
+                if (isValidName(cleaned)) found.push(cleaned);
+            }
+            
+            let resolvedName = COMMON_NAMES.has(match.name) ? match.name : TRUNCATION_FIXES[match.name];
+            found.push(resolvedName);
+            s = s.substring(match.idx + match.name.length);
+        } else {
+            let cleaned = stripArtifacts(s);
+            if (isValidName(cleaned)) found.push(cleaned);
+            break;
         }
     }
-    return line3;
+    return found;
 }
 
 function parseMRZName(line3) {
-    line3 = line3.replace(/<+$/, '');
-
-    // 1. Try to inject missing << for badly glued words (e.g. AGABACCMELLISACKIRABO)
-    if (!line3.includes('<<')) {
-        line3 = tryInjectSeparators(line3);
+    let raw = line3.replace(/<+$/, '').replace(/^I+/, '').replace(/F{2,}$|L{2,}$|J{2,}$|K{2,}$|C{2,}$|X{2,}$/g, '');
+    
+    // Standard MRZ has << separating Surname and Given Names.
+    if (raw.includes('<<')) {
+        let parts = raw.split('<<');
+        let surnameRaw = parts[0];
+        let givenRaw = parts.slice(1).join('<');
+        
+        let surname = fixTruncation(stripArtifacts(surnameRaw));
+        if (!COMMON_NAMES.has(surname)) {
+             let dict = extractNamesByDictionary(surnameRaw);
+             if (dict.length > 0) surname = dict[0];
+        }
+        
+        let givenParts = givenRaw.split(/<+/).filter(p => p.length > 1);
+        let finalGiven = [];
+        for (let p of givenParts) {
+             let cp = fixTruncation(stripArtifacts(p));
+             if (COMMON_NAMES.has(cp)) {
+                 finalGiven.push(cp);
+             } else {
+                 let dict = extractNamesByDictionary(p);
+                 if (dict.length > 0) finalGiven.push(...dict);
+                 else if (isValidName(cp)) finalGiven.push(cp);
+             }
+        }
+        
+        return { surname, givenName: finalGiven.join(' '), otherName: '' };
     }
-
-    // 2. If still no <<, try longest-prefix surname match
-    if (!line3.includes('<<')) {
-        // Strip leading artifact then try longest prefix
-        let test = stripLeadingArtifacts(line3);
-        for (let len = test.length; len > 2; len--) {
-            const prefix = test.slice(0, len);
-            if (COMMON_NAMES.has(prefix) || COMMON_NAMES.has(fixTruncation(prefix))) {
-                const surname = fixTruncation(prefix);
-                const restRaw = test.slice(len);
-                const rest = restRaw ? stripLeadingArtifacts(restRaw) : '';
-                if (!rest) return { surname, givenName: '', otherName: '' };
-                // Try to split rest by known artifacts or just use it
-                const given = tryInjectSeparators(rest).split(/<+/).filter(p => p.length > 1);
-                const fixedGiven = given.map(fixTruncation).filter(p => p.length > 1);
-                return { surname, givenName: fixedGiven.join(' '), otherName: '' };
+    
+    // Degraded case: No << found (e.g. IAGABACCMELLISACKIRABO or MUYUNGAK<CTIMOTHY)
+    if (raw.includes('<')) {
+        let parts = raw.split(/<+/).filter(p => p.length > 1);
+        let allExtracted = [];
+        for (let p of parts) {
+            let dict = extractNamesByDictionary(p);
+            if (dict.length > 0) allExtracted.push(...dict);
+            else {
+                let cp = fixTruncation(stripArtifacts(p));
+                if (isValidName(cp)) allExtracted.push(cp);
             }
         }
-        return { surname: test, givenName: '', otherName: '' };
-    }
-
-    // 3. Normal << split
-    const parts = line3.split('<<');
-    let surname = fixTruncation(stripTrailingArtifacts(stripLeadingArtifacts(parts[0])));
-    let rest = parts.slice(1).join('<<').replace(/<+$/, '');
-    let givenParts = rest.split('<').filter(p => p.length >= 1);
-
-    const cleanedGiven = [];
-    for (let part of givenParts) {
-        part = stripLeadingArtifacts(part);
-        part = fixTruncation(part);
-        part = stripTrailingArtifacts(part);
-
-        if (COMMON_NAMES.has(part) || part.length >= 3) {
-            if (part.length > 10) cleanedGiven.push(...splitMergedName(part));
-            else cleanedGiven.push(part);
-        } else if (part.length >= 2) {
-            cleanedGiven.push(part);
+        if (allExtracted.length >= 2) {
+             return { surname: allExtracted[0], givenName: allExtracted.slice(1).join(' '), otherName: '' };
         }
     }
-
-    const final = cleanedGiven.filter(p => {
-        if (p.length <= 1) return false;
-        if (/^[KLCXSP]{2,}$/.test(p) && !COMMON_NAMES.has(p)) return false;
-        if (['K','L','LL','LLL','KK','KL','LX','SP','CS','XC','EV','KEV','E','V'].includes(p)) return false;
-        return true;
-    });
-
-    return { surname, givenName: final.join(' '), otherName: '' };
+    
+    // Fully glued case
+    let dictNames = extractNamesByDictionary(raw);
+    if (dictNames.length >= 2) {
+        return { surname: dictNames[0], givenName: dictNames.slice(1).join(' '), otherName: '' };
+    }
+    
+    return { surname: raw, givenName: '', otherName: '' };
 }
 
 // --- DOB / Sex ---
