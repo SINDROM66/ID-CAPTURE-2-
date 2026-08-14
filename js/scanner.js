@@ -19,32 +19,8 @@ const cardFormView = document.getElementById('card-form');
 
 let lastProcessedCanvas = null;
 let originalUploadCanvas = null;
-let scanSide = 'front'; // default to front
 
 function initScanner() {
-    const btnFront = document.getElementById('scan-side-front');
-    const btnBack = document.getElementById('scan-side-back');
-    const uploadZoneTitle = document.getElementById('upload-zone-title');
-    const uploadZoneSubtitle = document.getElementById('upload-zone-subtitle');
-    const hintText = document.getElementById('scan-hint-text');
-
-    btnFront.addEventListener('click', () => {
-        scanSide = 'front';
-        btnFront.classList.replace('btn-outline', 'btn-primary');
-        btnBack.classList.replace('btn-primary', 'btn-outline');
-        uploadZoneTitle.textContent = 'Front of ID';
-        uploadZoneSubtitle.textContent = 'Reads personal details from front';
-        hintText.innerHTML = 'Hold phone parallel to card. The app auto-detects the fields on the front of the ID.';
-    });
-
-    btnBack.addEventListener('click', () => {
-        scanSide = 'back';
-        btnBack.classList.replace('btn-outline', 'btn-primary');
-        btnFront.classList.replace('btn-primary', 'btn-outline');
-        uploadZoneTitle.textContent = 'Back of ID';
-        uploadZoneSubtitle.textContent = 'Barcode scan — direct read';
-        hintText.innerHTML = 'Hold phone parallel to card. The app <strong>auto-detects the MRZ strip</strong> at the bottom — no need for perfect alignment.';
-    });
     triggerBtn.addEventListener('click', () => photoModal.classList.remove('hidden'));
     uploadZone.addEventListener('click', (e) => {
         if(e.target !== triggerBtn) photoModal.classList.remove('hidden');
@@ -192,12 +168,7 @@ async function runExtraction() {
 
     try {
         await new Promise(r => setTimeout(r, 100));
-        let parsedRecord;
-        if (scanSide === 'front') {
-            parsedRecord = await parseFrontUgandaID(lastProcessedCanvas);
-        } else {
-            parsedRecord = await parseUgandaID(lastProcessedCanvas, null);
-        }
+        let parsedRecord = await parseUgandaID(lastProcessedCanvas, null);
         
         populateForm(parsedRecord);
         cardProgressView.classList.add('hidden');
@@ -246,10 +217,10 @@ function populateForm(record) {
 
     if (record.sex) {
         const sexSelect = document.getElementById('sex');
-        if (record.sex.toLowerCase() === 'male') sexSelect.value = 'Male';
-        else if (record.sex.toLowerCase() === 'female') sexSelect.value = 'Female';
+        if (record.sex.toLowerCase() === 'male' || record.sex === 'M') sexSelect.value = 'Male';
+        else if (record.sex.toLowerCase() === 'female' || record.sex === 'F') sexSelect.value = 'Female';
+        else sexSelect.value = record.sex;
     }
-
     document.getElementById('nationality').value = record.nationality || 'UGA';
     document.getElementById('nin').value = record.nin || '';
 

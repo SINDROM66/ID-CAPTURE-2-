@@ -534,8 +534,8 @@ async function parseFrontUgandaID(imageCanvas) {
     ocrCanvas.height = noBars.height;
     ocrCanvas.getContext('2d').drawImage(noBars, 0, 0);
     
-    // Apply our robust Tesseract-optimized thresholding
-    gentleThresholding(ocrCanvas);
+    // Do NOT apply gentleThresholding. Tesseract's native Otsu thresholding is better for complex backgrounds.
+    // gentleThresholding(ocrCanvas);
     
     // 3. OCR on full image (pass true for isFront flag)
     const text = await runTesseract(ocrCanvas, true);
@@ -558,73 +558,70 @@ function extractFrontDetails(text) {
         nationality: 'UGA'
     };
     
-    // Helper to find the next valid non-label line after a specific label
-    const findValueAfterLabel = (labelRegex, lines, maxLookahead = 2) => {
-        for (let i = 0; i < lines.length; i++) {
-            if (labelRegex.test(lines[i])) {
-                // First check if value is on the same line (e.g. "Surname SMITH")
-                const remaining = lines[i].replace(labelRegex, '').trim();
-                if (remaining.length > 2) return remaining;
-                
-                // Otherwise look at the next few lines
-                for (let j = 1; j <= maxLookahead && i + j < lines.length; j++) {
-                    const candidate = lines[i + j].trim();
-                    // Ignore if it's another label or junk
-                    if (candidate.length < 2) continue;
-                    if (/^(SURNAME|GIVEN|DATE|SEX|NATIONALITY|CARD|NIN|SIGNATURE)/i.test(candidate)) continue;
-                    return candidate;
-                }
-            }
-        }
-        return '';
-    };
+    // Clean Tesseract's common NIN hallucination (CMO instead of CM0)
+    let cleanText = text.replace(/CMO/g, 'CM0').replace(/CFO/g, 'CF0');
+    // If it added an extra 0, making it 15 chars, this fixes it:
+    cleanText = cleanText.replace(/CM00/g, 'CM0').replace(/CF00/g, 'CF0');
 
-    // Extract Surname
-    let surname = findValueAfterLabel(/(?:SURNAME|SURNAM|URNAME)s?/i, lines);
-    record.surname = surname.replace(/[^A-Z]/gi, '').toUpperCase();
-    
-    // Extract Given Name
-    let givenName = findValueAfterLabel(/(?:GIVEN|GIVEN NAME|GIVEN NAME\(S\)|NAME\(S\))/i, lines);
-    record.givenName = givenName.replace(/[^A-Z\s]/gi, '').toUpperCase().trim();
-    
-    // Extract DOB
-    let dobLine = findValueAfterLabel(/(?:DATE OF BIRTH|DATE OF BIR|DOB|DATE)/i, lines);
-    // Find format like 14.12.1990 or 14-12-1990 or 14/12/1990
-    const dobMatch = dobLine.match(/(\d{2})[\.\-\/](\d{2})[\.\-\/](\d{4})/);
-    if (dobMatch) {
-        record.dob = `${dobMatch[3]}-${dobMatch[2]}-${dobMatch[1]}`; // YYYY-MM-DD
-    } else {
-        // Fallback: look anywhere in the text for a date
-        const anyDate = text.match(/(\d{2})[\.\-\/](\d{2})[\.\-\/](\d{4})/);
-        if (anyDate) {
-            record.dob = `${anyDate[3]}-${anyDate[2]}-${anyDate[1]}`;
-        }
-    }
-    
-    // Extract Sex
-    let sexLine = findValueAfterLabel(/(?:SEX)/i, lines);
-    if (sexLine.toUpperCase().includes('M') || /^M/.test(sexLine)) record.sex = 'Male';
-    else if (sexLine.toUpperCase().includes('F') || /^F/.test(sexLine)) record.sex = 'Female';
-    else {
-        // Fallback search
-        if (/\b[M]\b/i.test(text)) record.sex = 'Male';
-        else if (/\b[F]\b/i.test(text)) record.sex = 'Female';
-    }
-    
-    // Extract NIN
-    let ninLine = findValueAfterLabel(/(?:NIN|NATIONAL IDENTIFICATION NUMBER)/i, lines, 3);
-    const ninMatch = ninLine.match(/(C[MF][A-Z0-9]{12})/);
+    // 1. Extract NIN (Global Search)
+    // A Ugandan NIN is exactly 14 characters: C + M/F + 12 alphanumeric
+    const ninMatch = cleanText.match(/(C[MF][A-Z0-9]{12})/);
     if (ninMatch) {
         record.nin = ninMatch[1];
     } else {
-        // Global search for NIN pattern
-        const globalNinMatch = text.match(/\b(C[MF][A-Z0-9]{12})\b/);
-        if (globalNinMatch) record.nin = globalNinMatch[1];
+        console.warn("Could not confidently extract the NIN from the front of the ID. Manual entry required.");
+    }
+
+    // 2. Extract DOB (Global Search)
+    const dobMatch = cleanText.match(/(\d{2})[\.\-\/](\d{2})[\.\-\/](\d{4})/);
+    if (dobMatch) {
+        record.dob = `${dobMatch[3]}-${dobMatch[2]}-${dobMatch[1]}`; // YYYY-MM-DD
+    }
+
+    // 3. Extract Sex (Global Search near DOB or UGA)
+    if (/\bM\b/.test(cleanText) && !/\bF\b/.test(cleanText)) record.sex = 'Male';
+    else if (/\bF\b/.test(cleanText) && !/\bM\b/.test(cleanText)) record.sex = 'Female';
+    else {
+        // Look on lines with UGA
+        const ugaLine = lines.find(l => l.includes('UGA'));
+        if (ugaLine) {
+            if (/\bM\b/.test(ugaLine)) record.sex = 'Male';
+            else if (/\bF\b/.test(ugaLine)) record.sex = 'Female';
+        }
+    }
+
+    // 4. Extract Names using Line Proximity
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].toUpperCase();
+        
+        if (/SURNAME|SURNAM|URNAME/.test(line) && !record.surname) {
+            // Check same line first
+            const remainder = line.replace(/.*(?:SURNAME|SURNAM|URNAME)\s*/, '').replace(/[^A-Z]/g, '');
+            if (remainder.length > 2) {
+                record.surname = remainder;
+            } else if (i + 1 < lines.length) {
+                record.surname = lines[i+1].replace(/[^A-Z]/g, '');
+            }
+        }
+        
+        if (/(?:GIVEN|GIVEN NAME|GIVEN NAME\(S\)|NAME\(S\))/.test(line) && !record.givenName) {
+            const remainder = line.replace(/.*(?:GIVEN NAME|GIVEN|NAME\(S\))\s*/, '').replace(/[^A-Z\s]/g, '').trim();
+            if (remainder.length > 2) {
+                record.givenName = remainder;
+            } else if (i + 1 < lines.length) {
+                record.givenName = lines[i+1].replace(/[^A-Z\s]/g, '').trim();
+            }
+        }
     }
     
-    if (!record.nin || !record.surname) {
-        throw new Error("Could not confidently extract data from the front of the ID. Please ensure the image is well-lit.");
+    // Fallback if Surname was missed due to faint "SURNAME" text (e.g. Timothy's ID)
+    if (!record.surname) {
+        // Usually, the line before GIVEN NAME is the Surname if it's all caps
+        const givenIdx = lines.findIndex(l => /(?:GIVEN|GIVEN NAME)/i.test(l));
+        if (givenIdx > 0) {
+            record.surname = lines[givenIdx - 1].replace(/[^A-Z]/g, '');
+        }
     }
-    
+
     return record;
 }
