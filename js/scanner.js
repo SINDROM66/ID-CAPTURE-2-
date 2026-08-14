@@ -115,56 +115,86 @@ function stopLiveScanner() {
     }
 }
 
+// Buffers for Temporal Consensus
+const frontBuffer = new TemporalBuffer(5, 3);
+const backBuffer = new TemporalBuffer(5, 3);
+
 async function processVideoFrame() {
-    if (!isScanning || isProcessingFrame) return;
-    
-    const video = document.getElementById('camera-stream');
-    if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
-    
-    isProcessingFrame = true;
-    const statusText = document.getElementById('live-scan-status');
-    
-    try {
-        // Create an offscreen canvas to capture the current frame
-        const canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        
-        // If it's the front, we might want to process the whole image. 
-        // But for MRZ (Back), we only want the bottom part where the MRZ is.
-        // Actually, let's just send the whole canvas to runLiveExtraction
-        // and let parseUgandaID do the cropping if needed.
-        
-        let parsedRecord;
-        if (scanSide === 'front') {
-            parsedRecord = await parseFrontUgandaID(canvas);
-        } else {
-            // We pass the whole canvas, ug-id-parser will find MRZ
-            parsedRecord = await parseUgandaID(canvas, null);
-        }
-        
-        // If successful, stop scanner and populate form!
+  if (!isScanning || isProcessingFrame) return;
+  const video = document.getElementById('camera-stream');
+  if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
+
+  isProcessingFrame = true;
+  const statusText = document.getElementById('live-scan-status');
+
+  try {
+    // 1. Capture full frame
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+
+    // 2. Auto-detect side
+    const detection = await detectCardSide(canvas);
+
+    if (detection.side === 'back') {
+      if (statusText) statusText.textContent = 'Back detected — reading MRZ...';
+      const preprocessed = preprocessBack(canvas);
+      const record = await parseUgandaID(preprocessed, null);
+      
+      backBuffer.push(record);
+      if (backBuffer.isStable(record)) {
         stopLiveScanner();
-        
-        // Play success beep
-        const audio = new Audio('data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU'+Array(1e3).join('123')); 
-        audio.play().catch(e => {}); // Ignore if blocked
-        
-        lastProcessedCanvas = canvas;
-        populateForm(parsedRecord);
-        
+        populateForm(record);
+        saveOriginalImage(canvas);
+        showPreview(canvas);
+        const modal = document.getElementById('photo-modal');
+        if (modal) modal.classList.add('hidden');
         cardUploadView.classList.add('hidden');
         cardProgressView.classList.add('hidden');
         cardFormView.classList.remove('hidden');
-        
-    } catch (err) {
-        // OCR failed (e.g. no MRZ found), silently ignore and try next frame
-        console.log("Live scan frame rejected:", err.message);
-    } finally {
-        isProcessingFrame = false;
+      }
+    } 
+    else if (detection.side === 'front') {
+      if (statusText) statusText.textContent = 'Front detected — reading details...';
+      const preprocessed = preprocessFront(canvas);
+      const record = await parseFrontUgandaID(preprocessed);
+      
+      // Only push fields that passed validation
+      const cleanRecord = {};
+      Object.keys(record).forEach(k => {
+        if (VALIDATORS[k] ? VALIDATORS[k](record[k]) : !!record[k]) {
+          cleanRecord[k] = record[k];
+        }
+      });
+      
+      frontBuffer.push(cleanRecord);
+      const consensus = {};
+      Object.keys(cleanRecord).forEach(k => {
+        consensus[k] = frontBuffer.getConsensus(k, VALIDATORS[k]);
+      });
+      
+      if (consensus.surname && consensus.givenName && consensus.nin) {
+        stopLiveScanner();
+        populateForm(consensus);
+        saveOriginalImage(canvas);
+        showPreview(canvas);
+        const modal = document.getElementById('photo-modal');
+        if (modal) modal.classList.add('hidden');
+        cardUploadView.classList.add('hidden');
+        cardProgressView.classList.add('hidden');
+        cardFormView.classList.remove('hidden');
+      }
+    } 
+    else {
+      if (statusText) statusText.textContent = 'Align ID card within frame...';
     }
+
+  } catch (err) {
+    console.log('Frame rejected:', err.message);
+  } finally {
+    isProcessingFrame = false;
+  }
 }
 
 // =============================================================================

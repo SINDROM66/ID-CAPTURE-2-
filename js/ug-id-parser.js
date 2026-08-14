@@ -2,6 +2,49 @@
 // MRZ-OCR PIPELINE v6 — BULLETPROOF FINAL
 // ============================================
 
+class TemporalBuffer {
+  constructor(size = 5, threshold = 3) {
+    this.size = size;
+    this.threshold = threshold;
+    this.buffer = [];
+  }
+
+  push(record) {
+    this.buffer.push(record);
+    if (this.buffer.length > this.size) this.buffer.shift();
+  }
+
+  getConsensus(field, validator = () => true) {
+    const votes = {};
+    this.buffer.forEach(r => {
+      const v = r[field];
+      if (v && validator(v)) votes[v] = (votes[v] || 0) + 1;
+    });
+    const winner = Object.entries(votes).sort((a, b) => b[1] - a[1])[0];
+    return winner && winner[1] >= this.threshold ? winner[0] : null;
+  }
+
+  isStable(record) {
+    // Returns true if all non-empty fields in this record have consensus
+    return Object.keys(record).every(k => 
+      !record[k] || this.getConsensus(k) === record[k]
+    );
+  }
+}
+
+const VALIDATORS = {
+  nin: (v) => /^[ACFM][CMF][A-Z0-9]{12}$/.test(v),
+  dob: (v) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+    const d = new Date(v);
+    const now = new Date();
+    const age = (now - d) / (365.25 * 24 * 60 * 60 * 1000);
+    return age >= 16 && age <= 100;
+  },
+  sex: (v) => ['Male', 'Female'].includes(v),
+  surname: (v) => v.length >= 2 && /^[A-Z]+$/.test(v) && !/VILLAGE|PARISH|COUNTY|DISTRICT/.test(v),
+  givenName: (v) => v.length >= 2
+};
 const NON_MRZ_WORDS = [
     'THIS','PROPERTY','REPUBLIC','UGANDA','VILLAGE','PARISH',
     'COUNTY','DISTRICT','SUBCOUNTY','RIGHT','THUMB','FINGER',
@@ -492,108 +535,180 @@ function gentleThresholding(canvas) {
     return canvas;
 }
 
-// =============================================================================
-// FRONT OF ID SCANNER (LABEL-BASED PARSING)
-// =============================================================================
+// ─── STAGE 1 & 2: AUTO-DETECTION ───
+async function detectCardSide(canvas) {
+  const w = canvas.width, h = canvas.height;
 
+  // STAGE 1: Fast Back Probe (MRZ is in bottom 35%)
+  const bottomCrop = document.createElement('canvas');
+  bottomCrop.width = w;
+  bottomCrop.height = Math.floor(h * 0.35);
+  bottomCrop.getContext('2d').drawImage(
+    canvas, 0, Math.floor(h * 0.65), w, Math.floor(h * 0.35),
+    0, 0, w, Math.floor(h * 0.35)
+  );
+
+  gentleThresholding(bottomCrop);
+  
+  const backText = await runTesseract(bottomCrop, false, {
+    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<',
+    psm: 6
+  });
+
+  const backLines = backText.split('\n')
+    .map(l => l.trim().toUpperCase().replace(/[^A-Z0-9<]/g, ''))
+    .filter(l => l.length >= 20);
+
+  for (let i = 0; i < backLines.length - 2; i++) {
+    if (/^(ID|AC)/.test(backLines[i]) && 
+        backLines[i].includes('UGA') && 
+        /^\d{6}/.test(backLines[i+1])) {
+      return { side: 'back', cropCanvas: bottomCrop, text: backText };
+    }
+  }
+
+  // STAGE 2: Front Probe
+  const frontText = await runTesseract(canvas, true, {
+    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789<>. -/()',
+    psm: 3
+  });
+
+  const frontScore = ['SURNAME', 'GIVEN NAME', 'NATIONAL ID', 'REPUBLIC OF UGANDA', 'DATE OF BIRTH']
+    .reduce((acc, word) => acc + (frontText.toUpperCase().includes(word) ? 1 : 0), 0);
+
+  if (frontScore >= 2) {
+    return { side: 'front', text: frontText };
+  }
+
+  return { side: 'unknown' };
+}
+
+// ─── PREPROCESSING PIPELINES ───
+function preprocessFront(canvas) {
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const d = imgData.data;
+
+  // Glare Suppression
+  for (let i = 0; i < d.length; i += 4) {
+    const maxCh = Math.max(d[i], d[i+1], d[i+2]);
+    if (maxCh > 245) {
+      d[i] = d[i+1] = d[i+2] = 220; 
+    }
+  }
+
+  // Mild Contrast Stretch
+  let min = 255, max = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const gray = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+    if (gray < min) min = gray;
+    if (gray > max) max = gray;
+  }
+  const range = max - min || 1;
+  for (let i = 0; i < d.length; i += 4) {
+    const factor = 255 / range;
+    d[i]   = Math.min(255, (d[i]   - min) * factor);
+    d[i+1] = Math.min(255, (d[i+1] - min) * factor);
+    d[i+2] = Math.min(255, (d[i+2] - min) * factor);
+  }
+
+  ctx.putImageData(imgData, 0, 0);
+  return canvas;
+}
+
+function preprocessBack(canvas) {
+  const noBars = removeBlackBars(canvas);
+  
+  const h = noBars.height, w = noBars.width;
+  const crop = document.createElement('canvas');
+  crop.width = w;
+  crop.height = Math.floor(h * 0.45);
+  crop.getContext('2d').drawImage(
+    noBars, 0, Math.floor(h * 0.55), w, Math.floor(h * 0.45),
+    0, 0, w, Math.floor(h * 0.45)
+  );
+
+  gentleThresholding(crop);
+
+  // Upscale by 2.5x for Tesseract accuracy
+  const scaled = document.createElement('canvas');
+  scaled.width = crop.width * 2.5;
+  scaled.height = crop.height * 2.5;
+  const sCtx = scaled.getContext('2d');
+  sCtx.imageSmoothingEnabled = false; 
+  sCtx.drawImage(crop, 0, 0, scaled.width, scaled.height);
+
+  return scaled;
+}
+
+// ─── SPATIAL FRONT PARSER ───
 async function parseFrontUgandaID(imageCanvas) {
-    // 1. Remove black bars
-    const noBars = removeBlackBars(imageCanvas);
-    
-    // 2. Grayscale & Thresholding (applies to whole image to remove background noise)
-    const ocrCanvas = document.createElement('canvas');
-    ocrCanvas.width = noBars.width;
-    ocrCanvas.height = noBars.height;
-    ocrCanvas.getContext('2d').drawImage(noBars, 0, 0);
-    
-    // Do NOT apply gentleThresholding. Tesseract's native Otsu thresholding is better for complex backgrounds.
-    // gentleThresholding(ocrCanvas);
-    
-    // 3. OCR on full image (pass true for isFront flag)
-    const text = await runTesseract(ocrCanvas, true);
-    console.log("[Front OCR Output]:\n" + text);
-    
-    // 4. Parse Labels
-    return extractFrontDetails(text);
-}
+  const noBars = removeBlackBars(imageCanvas);
+  // Assuming suppressGlare helper exists based on instructions
+  if (typeof suppressGlare === 'function') suppressGlare(noBars);
+  
+  // Note: we need the native Tesseract object for bounding boxes
+  const worker = await getTesseractWorker('eng');
+  const result = await worker.recognize(noBars, {
+    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789<>. -/()',
+    tessjs_create_box: '1',
+    psm: 3
+  });
 
-function extractFrontDetails(text) {
-    const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-    
-    let record = {
-        surname: '',
-        givenName: '',
-        otherName: '',
-        dob: '',
-        sex: '',
-        nin: '',
-        nationality: 'UGA'
-    };
-    
-    // Clean Tesseract's common NIN hallucination (CMO instead of CM0)
-    let cleanText = text.replace(/CMO/g, 'CM0').replace(/CFO/g, 'CF0');
-    // If it added an extra 0, making it 15 chars, this fixes it:
-    cleanText = cleanText.replace(/CM00/g, 'CM0').replace(/CF00/g, 'CF0');
+  const lines = result.data.lines
+    .filter(l => l.confidence > 40 && l.text.trim().length > 0)
+    .map(l => ({
+      text: l.text.trim(),
+      x0: l.bbox.x0 / noBars.width,
+      y0: l.bbox.y0 / noBars.height,
+      x1: l.bbox.x1 / noBars.width,
+      y1: l.bbox.y1 / noBars.height,
+      cx: (l.bbox.x0 + l.bbox.x1) / 2 / noBars.width,
+      cy: (l.bbox.y0 + l.bbox.y1) / 2 / noBars.height
+    }))
+    .sort((a, b) => a.cy - b.cy || a.cx - b.cx);
 
-    // 1. Extract NIN (Global Search)
-    // A Ugandan NIN is exactly 14 characters: C + M/F + 12 alphanumeric
-    const ninMatch = cleanText.match(/(C[MF][A-Z0-9]{12})/);
-    if (ninMatch) {
-        record.nin = ninMatch[1];
-    } else {
-        console.warn("Could not confidently extract the NIN from the front of the ID. Manual entry required.");
-    }
+  const record = { nationality: 'UGA' };
 
-    // 2. Extract DOB (Global Search)
-    const dobMatch = cleanText.match(/(\d{2})[\.\-\/](\d{2})[\.\-\/](\d{4})/);
-    if (dobMatch) {
-        record.dob = `${dobMatch[3]}-${dobMatch[2]}-${dobMatch[1]}`; // YYYY-MM-DD
-    }
-
-    // 3. Extract Sex (Global Search near DOB or UGA)
-    if (/\bM\b/.test(cleanText) && !/\bF\b/.test(cleanText)) record.sex = 'Male';
-    else if (/\bF\b/.test(cleanText) && !/\bM\b/.test(cleanText)) record.sex = 'Female';
-    else {
-        // Look on lines with UGA
-        const ugaLine = lines.find(l => l.includes('UGA'));
-        if (ugaLine) {
-            if (/\bM\b/.test(ugaLine)) record.sex = 'Male';
-            else if (/\bF\b/.test(ugaLine)) record.sex = 'Female';
-        }
-    }
-
-    // 4. Extract Names using Line Proximity
+  function extractRightOf(anchorRegex, yTolerance = 0.06, xMin = 0.35) {
     for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].toUpperCase();
-        
-        if (/SURNAME|SURNAM|URNAME/.test(line) && !record.surname) {
-            // Check same line first
-            const remainder = line.replace(/.*(?:SURNAME|SURNAM|URNAME)\s*/, '').replace(/[^A-Z]/g, '');
-            if (remainder.length > 2) {
-                record.surname = remainder;
-            } else if (i + 1 < lines.length) {
-                record.surname = lines[i+1].replace(/[^A-Z]/g, '');
-            }
+      if (anchorRegex.test(lines[i].text.toUpperCase())) {
+        const candidates = lines.filter(l => 
+          l !== lines[i] &&
+          Math.abs(l.cy - lines[i].cy) < yTolerance &&
+          l.cx > xMin
+        );
+        if (candidates.length) {
+          return candidates.map(c => c.text).join(' ').toUpperCase();
         }
-        
-        if (/(?:GIVEN|GIVEN NAME|GIVEN NAME\(S\)|NAME\(S\))/.test(line) && !record.givenName) {
-            const remainder = line.replace(/.*(?:GIVEN NAME|GIVEN|NAME\(S\))\s*/, '').replace(/[^A-Z\s]/g, '').trim();
-            if (remainder.length > 2) {
-                record.givenName = remainder;
-            } else if (i + 1 < lines.length) {
-                record.givenName = lines[i+1].replace(/[^A-Z\s]/g, '').trim();
-            }
-        }
+        if (i + 1 < lines.length) return lines[i+1].text.toUpperCase();
+      }
     }
-    
-    // Fallback if Surname was missed due to faint "SURNAME" text (e.g. Timothy's ID)
-    if (!record.surname) {
-        // Usually, the line before GIVEN NAME is the Surname if it's all caps
-        const givenIdx = lines.findIndex(l => /(?:GIVEN|GIVEN NAME)/i.test(l));
-        if (givenIdx > 0) {
-            record.surname = lines[givenIdx - 1].replace(/[^A-Z]/g, '');
-        }
-    }
+    return '';
+  }
 
-    return record;
-}
+  record.surname = extractRightOf(/SURNAME|SURNAM|URNAME/);
+  record.givenName = extractRightOf(/GIVEN\s*NAME|GIVEN|NAME\(S\)/);
+  
+  const givenIdx = lines.findIndex(l => /GIVEN\s*NAME/i.test(l.text));
+  if (givenIdx >= 0 && givenIdx + 1 < lines.length && !record.surname) {
+    record.surname = lines[Math.max(0, givenIdx - 1)].text.replace(/[^A-Z]/g, '');
+  }
+
+  const rightHalfText = lines.filter(l => l.cx > 0.4).map(l => l.text).join(' ');
+  const ninMatch = rightHalfText.match(/(C[MF][A-Z0-9]{12})/);
+  if (ninMatch) record.nin = ninMatch[1];
+
+  const dobMatch = rightHalfText.match(/(\d{2})[\.\-\/](\d{2})[\.\-\/](\d{4})/);
+  if (dobMatch) {
+    record.dob = `${dobMatch[3]}-${dobMatch[2]}-${dobMatch[1]}`;
+  }
+
+  const ugaBand = lines.filter(l => l.cx > 0.4 && /UGA/.test(l.text));
+  const sexContext = ugaBand.map(l => l.text).join(' ');
+  if (/\bM\b/.test(sexContext) && !/\bF\b/.test(sexContext)) record.sex = 'Male';
+  else if (/\bF\b/.test(sexContext) && !/\bM\b/.test(sexContext)) record.sex = 'Female';
+
+  return record;
+};
