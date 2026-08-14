@@ -26,6 +26,7 @@ let liveStream = null;
 let isScanning = false;
 let isProcessingFrame = false;
 let scanInterval = null;
+let lastProcessTime = 0;
 
 function initScanner() {
     const btnFront = document.getElementById('scan-side-front');
@@ -115,123 +116,186 @@ function stopLiveScanner() {
     }
 }
 
-// Buffers for Temporal Consensus
-const frontBuffer = new TemporalBuffer(5, 3);
-const backBuffer = new TemporalBuffer(5, 3);
+async function detectCardSide(canvas, precomputedFrontText = null, precomputedLines = null) {
+  const w = canvas.width, h = canvas.height;
+
+  // STAGE 1: Fast Back Probe (bottom 35% with aggressive threshold)
+  const bottomCrop = document.createElement('canvas');
+  bottomCrop.width = w;
+  bottomCrop.height = Math.floor(h * 0.35);
+  bottomCrop.getContext('2d').drawImage(
+    canvas, 0, Math.floor(h * 0.65), w, Math.floor(h * 0.35),
+    0, 0, w, Math.floor(h * 0.35)
+  );
+
+  gentleThresholding(bottomCrop);
+
+  const backText = await Tesseract.recognize(bottomCrop, 'eng', {
+    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<',
+    psm: 6
+  }).then(r => r.data.text);
+
+  const backLines = backText.split('\n')
+    .map(l => l.trim().toUpperCase().replace(/[^A-Z0-9<]/g, ''))
+    .filter(l => l.length >= 20);
+
+  for (let i = 0; i < backLines.length - 2; i++) {
+    if (/^(ID|AC)/.test(backLines[i]) &&
+        backLines[i].includes('UGA') &&
+        /^\d{6}/.test(backLines[i+1])) {
+      return { side: 'back', cropCanvas: bottomCrop, text: backText };
+    }
+  }
+
+  // STAGE 2: Front Probe (reuse precomputed if available)
+  let frontText = precomputedFrontText;
+  let frontLines = precomputedLines;
+
+  if (!frontText) {
+    const frontResult = await Tesseract.recognize(canvas, 'eng', {
+      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789<>. -/()',
+      psm: 3
+    });
+    frontText = frontResult.data.text;
+    frontLines = frontResult.data.lines
+      .filter(l => l.confidence > 40 && l.text.trim().length > 0)
+      .map(l => ({
+        text: l.text.trim(),
+        x0: l.bbox.x0 / canvas.width,
+        y0: l.bbox.y0 / canvas.height,
+        x1: l.bbox.x1 / canvas.width,
+        y1: l.bbox.y1 / canvas.height,
+        cx: (l.bbox.x0 + l.bbox.x1) / 2 / canvas.width,
+        cy: (l.bbox.y0 + l.bbox.y1) / 2 / canvas.height
+      }))
+      .sort((a, b) => a.cy - b.cy || a.cx - b.cx);
+  }
+
+  const frontScore = ['SURNAME', 'GIVEN NAME', 'NATIONAL ID', 'REPUBLIC OF UGANDA', 'DATE OF BIRTH']
+    .reduce((acc, word) => acc + (frontText.toUpperCase().includes(word) ? 1 : 0), 0);
+
+  if (frontScore >= 2) {
+    return { side: 'front', text: frontText, lines: frontLines };
+  }
+
+  return { side: 'unknown' };
+}
 
 function updateTiltGuide(slope) {
   const guide = document.getElementById('live-scan-status');
-  if (!guide) return true;
-  
   const deg = slope * (180 / Math.PI);
+
   if (Math.abs(deg) > 12) {
-    guide.style.color = '#ff5252'; // red
-    guide.textContent = `Rotate card ${deg > 0 ? 'clockwise' : 'counter-clockwise'} — ${Math.abs(deg).toFixed(0)}°`;
-    return false; // Reject frame
+    guide.style.color = '#ff5252';
+    guide.textContent = `Rotate card ${deg > 0 ? 'clockwise' : 'counter-clockwise'} \u2014 ${Math.abs(deg).toFixed(0)}\u00b0`;
+    return false;
   } else if (Math.abs(deg) > 6) {
-    guide.style.color = '#ffd740'; // amber
+    guide.style.color = '#ffd740';
     guide.textContent = 'Almost straight... hold steady';
-    return true; 
+    return true;
   } else {
-    guide.style.color = '#00e676'; // green
+    guide.style.color = '#00e676';
     guide.textContent = 'Scanning automatically...';
     return true;
   }
 }
 
-let lastProcessTime = 0;
-const MIN_INTERVAL_LOW_END = 1200; // ms
-
 async function processVideoFrame() {
-  if (!isScanning || isProcessingFrame) return;
-  const video = document.getElementById('camera-stream');
-  if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
+    if (!isScanning || isProcessingFrame) return;
 
-  const now = performance.now();
-  const isLowEnd = navigator.hardwareConcurrency <= 4; 
-  if (isLowEnd && (now - lastProcessTime) < MIN_INTERVAL_LOW_END) {
-    requestAnimationFrame(processVideoFrame);
-    return;
-  }
+    const video = document.getElementById('camera-stream');
+    if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
 
-  isProcessingFrame = true;
-  const statusText = document.getElementById('live-scan-status');
-
-  try {
-    // 1. Capture full frame
-    const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    canvas.getContext('2d').drawImage(video, 0, 0);
-
-    // 2. Downscale probe for faster detection
-    const probeCanvas = document.createElement('canvas');
-    probeCanvas.width = Math.floor(canvas.width * 0.5);
-    probeCanvas.height = Math.floor(canvas.height * 0.5);
-    probeCanvas.getContext('2d').drawImage(canvas, 0, 0, probeCanvas.width, probeCanvas.height);
-
-    // 3. Auto-detect side
-    const detection = await detectCardSide(probeCanvas);
-
-    if (detection.side === 'back') {
-      if (statusText) statusText.textContent = 'Back detected — reading MRZ...';
-      const preprocessed = preprocessBack(canvas);
-      const record = await parseUgandaID(preprocessed, null);
-      
-      backBuffer.push(record);
-      if (backBuffer.isStable(record)) {
-        stopLiveScanner();
-        populateForm(record);
-        saveOriginalImage(canvas);
-        showPreview(canvas);
-        const modal = document.getElementById('photo-modal');
-        if (modal) modal.classList.add('hidden');
-        cardUploadView.classList.add('hidden');
-        cardProgressView.classList.add('hidden');
-        cardFormView.classList.remove('hidden');
-      }
-    } 
-    else if (detection.side === 'front') {
-      if (statusText) statusText.textContent = 'Front detected — reading details...';
-      const preprocessed = preprocessFront(canvas);
-      const record = await parseFrontUgandaID(preprocessed);
-      
-      // Only push fields that passed validation
-      const cleanRecord = {};
-      Object.keys(record).forEach(k => {
-        if (VALIDATORS[k] ? VALIDATORS[k](record[k]) : !!record[k]) {
-          cleanRecord[k] = record[k];
-        }
-      });
-      
-      frontBuffer.push(cleanRecord);
-      const consensus = {};
-      Object.keys(cleanRecord).forEach(k => {
-        consensus[k] = frontBuffer.getConsensus(k, VALIDATORS[k]);
-      });
-      
-      if (consensus.surname && consensus.givenName && consensus.nin) {
-        stopLiveScanner();
-        populateForm(consensus);
-        saveOriginalImage(canvas);
-        showPreview(canvas);
-        const modal = document.getElementById('photo-modal');
-        if (modal) modal.classList.add('hidden');
-        cardUploadView.classList.add('hidden');
-        cardProgressView.classList.add('hidden');
-        cardFormView.classList.remove('hidden');
-      }
-    } 
-    else {
-      if (statusText) statusText.textContent = 'Align ID card within frame...';
+    // Adaptive skipper for low-end devices
+    const now = performance.now();
+    const isLowEnd = navigator.hardwareConcurrency <= 4;
+    if (isLowEnd && (now - lastProcessTime) < 1200) {
+      return;
     }
 
-  } catch (err) {
-    console.log('Frame rejected:', err.message);
-  } finally {
-    isProcessingFrame = false;
-    lastProcessTime = performance.now();
-  }
+    isProcessingFrame = true;
+    const statusText = document.getElementById('live-scan-status');
+
+    try {
+      // 1. Capture full frame
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext('2d').drawImage(video, 0, 0);
+
+      // 2. Create 50% downscaled probe for initial detection
+      const probeCanvas = document.createElement('canvas');
+      probeCanvas.width = canvas.width * 0.5;
+      probeCanvas.height = canvas.height * 0.5;
+      probeCanvas.getContext('2d').drawImage(canvas, 0, 0, probeCanvas.width, probeCanvas.height);
+
+      // 3. Lightweight line probe for tilt detection
+      const lineResult = await Tesseract.recognize(probeCanvas, 'eng', {
+        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789<>. -/()',
+        psm: 3
+      });
+
+      const lines = lineResult.data.lines
+        .filter(l => l.confidence > 40 && l.text.trim().length > 0)
+        .map(l => ({
+          text: l.text.trim(),
+          x0: l.bbox.x0 / probeCanvas.width,
+          y0: l.bbox.y0 / probeCanvas.height,
+          x1: l.bbox.x1 / probeCanvas.width,
+          y1: l.bbox.y1 / probeCanvas.height,
+          cx: (l.bbox.x0 + l.bbox.x1) / 2 / probeCanvas.width,
+          cy: (l.bbox.y0 + l.bbox.y1) / 2 / probeCanvas.height
+        }))
+        .sort((a, b) => a.cy - b.cy || a.cx - b.cx);
+
+      // 4. Tilt check
+      const slope = estimateTextSlope(lines);
+      if (!updateTiltGuide(slope)) {
+        isProcessingFrame = false;
+        return;
+      }
+
+      // 5. Auto-detect side using downscaled probe, passing precomputed front data
+      const detection = await detectCardSide(probeCanvas, lineResult.data.text, lines);
+
+      if (detection.side === 'back') {
+        statusText.textContent = 'Back detected \u2014 reading MRZ...';
+        const parsedRecord = await parseUgandaID(detection.cropCanvas || probeCanvas, null);
+
+        stopLiveScanner();
+        const audio = new Audio('data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU'+Array(1e3).join('123'));
+        audio.play().catch(e => {});
+
+        lastProcessedCanvas = canvas;
+        populateForm(parsedRecord);
+        cardUploadView.classList.add('hidden');
+        cardProgressView.classList.add('hidden');
+        cardFormView.classList.remove('hidden');
+
+      } else if (detection.side === 'front') {
+        statusText.textContent = 'Front detected \u2014 reading details...';
+        const parsedRecord = await parseFrontUgandaID(probeCanvas, detection.lines || lines);
+
+        stopLiveScanner();
+        const audio = new Audio('data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU'+Array(1e3).join('123'));
+        audio.play().catch(e => {});
+
+        lastProcessedCanvas = canvas;
+        populateForm(parsedRecord);
+        cardUploadView.classList.add('hidden');
+        cardProgressView.classList.add('hidden');
+        cardFormView.classList.remove('hidden');
+
+      } else {
+        statusText.textContent = 'Align ID card within frame...';
+      }
+
+    } catch (err) {
+      console.log("Live scan frame rejected:", err.message);
+    } finally {
+      lastProcessTime = performance.now();
+      isProcessingFrame = false;
+    }
 }
 
 // =============================================================================
