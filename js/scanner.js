@@ -25,7 +25,7 @@ let scanSide = 'back'; // default to back
 let liveStream = null;
 let isScanning = false;
 let isProcessingFrame = false;
-let scanInterval = null;
+let scanTimeout = null;   // ← changed from scanInterval
 let lastProcessTime = 0;
 
 function initScanner() {
@@ -89,13 +89,13 @@ async function startLiveScanner() {
         modal.classList.remove('hidden');
         isScanning = true;
         isProcessingFrame = false;
-        statusText.textContent = 'Scanning automatically...';
+        statusText.textContent = 'Scanning... hold steady';
         
         // Wait for video to start playing before capturing frames
         video.onloadedmetadata = () => {
             video.play();
-            // Start frame capture loop (every 600ms)
-            scanInterval = setInterval(processVideoFrame, 600);
+            // Start the recursive frame loop (replaces setInterval)
+            scheduleNextFrame();
         };
     } catch (err) {
         console.error("Camera access failed:", err);
@@ -106,7 +106,11 @@ async function startLiveScanner() {
 
 function stopLiveScanner() {
     isScanning = false;
-    clearInterval(scanInterval);
+    // Clear any pending timeout so the loop stops immediately
+    if (scanTimeout) {
+        clearTimeout(scanTimeout);
+        scanTimeout = null;
+    }
     const modal = document.getElementById('live-scanner-modal');
     modal.classList.add('hidden');
     
@@ -116,88 +120,34 @@ function stopLiveScanner() {
     }
 }
 
-async function detectCardSide(canvas, precomputedFrontText = null, precomputedLines = null) {
-  const w = canvas.width, h = canvas.height;
-
-  // STAGE 1: Fast Back Probe (bottom 35% with aggressive threshold)
-  const bottomCrop = document.createElement('canvas');
-  bottomCrop.width = w;
-  bottomCrop.height = Math.floor(h * 0.35);
-  bottomCrop.getContext('2d').drawImage(
-    canvas, 0, Math.floor(h * 0.65), w, Math.floor(h * 0.35),
-    0, 0, w, Math.floor(h * 0.35)
-  );
-
-  gentleThresholding(bottomCrop);
-
-  const backText = await Tesseract.recognize(bottomCrop, 'eng', {
-    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<',
-    psm: 6
-  }).then(r => r.data.text);
-
-  const backLines = backText.split('\n')
-    .map(l => l.trim().toUpperCase().replace(/[^A-Z0-9<]/g, ''))
-    .filter(l => l.length >= 20);
-
-  for (let i = 0; i < backLines.length - 2; i++) {
-    if (/^(ID|AC)/.test(backLines[i]) &&
-        backLines[i].includes('UGA') &&
-        /^\d{6}/.test(backLines[i+1])) {
-      return { side: 'back', cropCanvas: bottomCrop, text: backText };
-    }
-  }
-
-  // STAGE 2: Front Probe (reuse precomputed if available)
-  let frontText = precomputedFrontText;
-  let frontLines = precomputedLines;
-
-  if (!frontText) {
-    const frontResult = await Tesseract.recognize(canvas, 'eng', {
-      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789<>. -/()',
-      psm: 3
-    });
-    frontText = frontResult.data.text;
-    frontLines = frontResult.data.lines
-      .filter(l => l.confidence > 40 && l.text.trim().length > 0)
-      .map(l => ({
-        text: l.text.trim(),
-        x0: l.bbox.x0 / canvas.width,
-        y0: l.bbox.y0 / canvas.height,
-        x1: l.bbox.x1 / canvas.width,
-        y1: l.bbox.y1 / canvas.height,
-        cx: (l.bbox.x0 + l.bbox.x1) / 2 / canvas.width,
-        cy: (l.bbox.y0 + l.bbox.y1) / 2 / canvas.height
-      }))
-      .sort((a, b) => a.cy - b.cy || a.cx - b.cx);
-  }
-
-  const frontScore = ['SURNAME', 'GIVEN NAME', 'NATIONAL ID', 'REPUBLIC OF UGANDA', 'DATE OF BIRTH']
-    .reduce((acc, word) => acc + (frontText.toUpperCase().includes(word) ? 1 : 0), 0);
-
-  if (frontScore >= 2) {
-    return { side: 'front', text: frontText, lines: frontLines };
-  }
-
-  return { side: 'unknown' };
+// ─── Recursive frame scheduler (prevents overlap) ───
+function scheduleNextFrame() {
+    if (!isScanning) return;
+    scanTimeout = setTimeout(async () => {
+        await processVideoFrame();
+        // Only schedule the NEXT frame after this one fully completes
+        if (isScanning) scheduleNextFrame();
+    }, 600);
 }
 
+// ─── Tilt guide for front scan only ───
 function updateTiltGuide(slope) {
-  const guide = document.getElementById('live-scan-status');
-  const deg = slope * (180 / Math.PI);
+    const guide = document.getElementById('live-scan-status');
+    const deg = slope * (180 / Math.PI);
 
-  if (Math.abs(deg) > 12) {
-    guide.style.color = '#ff5252';
-    guide.textContent = `Rotate card ${deg > 0 ? 'clockwise' : 'counter-clockwise'} \u2014 ${Math.abs(deg).toFixed(0)}\u00b0`;
-    return false;
-  } else if (Math.abs(deg) > 6) {
-    guide.style.color = '#ffd740';
-    guide.textContent = 'Almost straight... hold steady';
-    return true;
-  } else {
-    guide.style.color = '#00e676';
-    guide.textContent = 'Scanning automatically...';
-    return true;
-  }
+    if (Math.abs(deg) > 12) {
+        guide.style.color = '#ff5252';
+        guide.textContent = `Rotate card ${deg > 0 ? 'clockwise' : 'counter-clockwise'} \u2014 ${Math.abs(deg).toFixed(0)}\u00b0`;
+        return false;
+    } else if (Math.abs(deg) > 6) {
+        guide.style.color = '#ffd740';
+        guide.textContent = 'Almost straight... hold steady';
+        return true;
+    } else {
+        guide.style.color = '#00e676';
+        guide.textContent = 'Scanning... hold steady';
+        return true;
+    }
 }
 
 async function processVideoFrame() {
@@ -210,91 +160,90 @@ async function processVideoFrame() {
     const now = performance.now();
     const isLowEnd = navigator.hardwareConcurrency <= 4;
     if (isLowEnd && (now - lastProcessTime) < 1200) {
-      return;
+        return;
     }
 
     isProcessingFrame = true;
     const statusText = document.getElementById('live-scan-status');
 
     try {
-      // 1. Capture full frame
-      const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      canvas.getContext('2d').drawImage(video, 0, 0);
+        // 1. Capture full frame
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext('2d').drawImage(video, 0, 0);
 
-      // 2. Create 50% downscaled probe for initial detection
-      const probeCanvas = document.createElement('canvas');
-      probeCanvas.width = canvas.width * 0.5;
-      probeCanvas.height = canvas.height * 0.5;
-      probeCanvas.getContext('2d').drawImage(canvas, 0, 0, probeCanvas.width, probeCanvas.height);
+        let parsedRecord;
 
-      // 3. Lightweight line probe for tilt detection
-      const lineResult = await Tesseract.recognize(probeCanvas, 'eng', {
-        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789<>. -/()',
-        psm: 3
-      });
+        // ═══════════════════════════════════════════════════════
+        // FRONT SCAN PATH (Details side)
+        // ═══════════════════════════════════════════════════════
+        if (scanSide === 'front') {
+            // 2. Lightweight 50% downscaled probe for tilt detection
+            const probeCanvas = document.createElement('canvas');
+            probeCanvas.width = canvas.width * 0.5;
+            probeCanvas.height = canvas.height * 0.5;
+            probeCanvas.getContext('2d').drawImage(canvas, 0, 0, probeCanvas.width, probeCanvas.height);
 
-      const lines = lineResult.data.lines
-        .filter(l => l.confidence > 40 && l.text.trim().length > 0)
-        .map(l => ({
-          text: l.text.trim(),
-          x0: l.bbox.x0 / probeCanvas.width,
-          y0: l.bbox.y0 / probeCanvas.height,
-          x1: l.bbox.x1 / probeCanvas.width,
-          y1: l.bbox.y1 / probeCanvas.height,
-          cx: (l.bbox.x0 + l.bbox.x1) / 2 / probeCanvas.width,
-          cy: (l.bbox.y0 + l.bbox.y1) / 2 / probeCanvas.height
-        }))
-        .sort((a, b) => a.cy - b.cy || a.cx - b.cx);
+            // 3. Quick line probe to estimate tilt
+            const lineResult = await Tesseract.recognize(probeCanvas, 'eng', {
+                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789<>. -/()',
+                psm: 3
+            });
 
-      // 4. Tilt check
-      const slope = estimateTextSlope(lines);
-      if (!updateTiltGuide(slope)) {
-        isProcessingFrame = false;
-        return;
-      }
+            const lines = lineResult.data.lines
+                .filter(l => l.confidence > 40 && l.text.trim().length > 0)
+                .map(l => ({
+                    text: l.text.trim(),
+                    x0: l.bbox.x0 / probeCanvas.width,
+                    y0: l.bbox.y0 / probeCanvas.height,
+                    x1: l.bbox.x1 / probeCanvas.width,
+                    y1: l.bbox.y1 / probeCanvas.height,
+                    cx: (l.bbox.x0 + l.bbox.x1) / 2 / probeCanvas.width,
+                    cy: (l.bbox.y0 + l.bbox.y1) / 2 / probeCanvas.height
+                }))
+                .sort((a, b) => a.cy - b.cy || a.cx - b.cx);
 
-      // 5. Auto-detect side using downscaled probe, passing precomputed front data
-      const detection = await detectCardSide(probeCanvas, lineResult.data.text, lines);
+            // 4. Tilt check — reject severely angled frames
+            const slope = estimateTextSlope(lines);
+            if (!updateTiltGuide(slope)) {
+                isProcessingFrame = false;
+                return;
+            }
 
-      if (detection.side === 'back') {
-        statusText.textContent = 'Back detected \u2014 reading MRZ...';
-        const parsedRecord = await parseUgandaID(detection.cropCanvas || probeCanvas, null);
+            // 5. Run front parser with precomputed lines (avoids double OCR)
+            statusText.textContent = 'Reading front details...';
+            parsedRecord = await parseFrontUgandaID(probeCanvas, lines);
 
+        // ═══════════════════════════════════════════════════════
+        // BACK SCAN PATH (MRZ side)
+        // ═══════════════════════════════════════════════════════
+        } else {
+            // MRZ doesn't need tilt guide — the checksum validates accuracy
+            statusText.textContent = 'Reading MRZ...';
+            parsedRecord = await parseUgandaID(canvas, null);
+        }
+
+        // ─── SUCCESS: stop scanner and populate form ───
         stopLiveScanner();
-        const audio = new Audio('data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU'+Array(1e3).join('123'));
+
+        const audio = new Audio('data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU'+Array(1e3).join('123')); 
         audio.play().catch(e => {});
 
         lastProcessedCanvas = canvas;
         populateForm(parsedRecord);
+
         cardUploadView.classList.add('hidden');
         cardProgressView.classList.add('hidden');
         cardFormView.classList.remove('hidden');
-
-      } else if (detection.side === 'front') {
-        statusText.textContent = 'Front detected \u2014 reading details...';
-        const parsedRecord = await parseFrontUgandaID(probeCanvas, detection.lines || lines);
-
-        stopLiveScanner();
-        const audio = new Audio('data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU'+Array(1e3).join('123'));
-        audio.play().catch(e => {});
-
-        lastProcessedCanvas = canvas;
-        populateForm(parsedRecord);
-        cardUploadView.classList.add('hidden');
-        cardProgressView.classList.add('hidden');
-        cardFormView.classList.remove('hidden');
-
-      } else {
-        statusText.textContent = 'Align ID card within frame...';
-      }
 
     } catch (err) {
-      console.log("Live scan frame rejected:", err.message);
+        // OCR failed (e.g. no MRZ found), silently ignore and try next frame
+        console.log("Live scan frame rejected:", err.message);
+        statusText.textContent = 'Scanning... hold steady';
     } finally {
-      lastProcessTime = performance.now();
-      isProcessingFrame = false;
+        lastProcessTime = performance.now();
+        isProcessingFrame = false;
     }
 }
 

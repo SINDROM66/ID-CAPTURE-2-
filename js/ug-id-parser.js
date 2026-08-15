@@ -493,7 +493,7 @@ function gentleThresholding(canvas) {
 }
 
 // =============================================================================
-// DYNAMIC BASELINE SLOPE DETECTION
+// DYNAMIC BASELINE SLOPE DETECTION (Front Scan Only)
 // =============================================================================
 
 function estimateTextSlope(lines) {
