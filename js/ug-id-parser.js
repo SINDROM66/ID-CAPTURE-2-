@@ -118,126 +118,36 @@ function extractMRZ(textLines) {
     return null;
 }
 
-// --- Name Parsing ---
-function fixTruncation(name) {
-    if (TRUNCATION_FIXES[name]) return TRUNCATION_FIXES[name];
-    // Strip leading KL artifact (from << OCR confusion)
-    if (name.startsWith('KL') && name.length > 4) {
-        const remainder = name.substring(2);
-        if (COMMON_NAMES.has(remainder)) return remainder;
-        if (TRUNCATION_FIXES[remainder]) return TRUNCATION_FIXES[remainder];
-    }
-    // Strip leading K artifact (from < OCR confusion)
-    if (name.startsWith('K') && !name.startsWith('KI') && name.length > 4) {
-        const remainder = name.substring(1);
-        if (COMMON_NAMES.has(remainder)) return remainder;
-    }
-    return name;
-}
-
-function stripArtifacts(part) {
-    if (part.length <= 3) return part;
-    let p = part;
-    if (/^[I1C]/.test(p)) p = p.slice(1);
-    if (/C{1,2}$|K{1,2}$|X{1,2}$/.test(p)) p = p.replace(/C{1,2}$|K{1,2}$|X{1,2}$/, '');
-    return p;
-}
-
-function isValidName(part) {
-    if (part.length <= 1) return false;
-    if (/^[KLCXSP]{2,}$/.test(part) && !COMMON_NAMES.has(part)) return false;
-    return true;
-}
-
-function extractNamesByDictionary(str) {
-    const found = [];
-    let s = str;
-    const allKnown = [...Array.from(COMMON_NAMES), ...Object.keys(TRUNCATION_FIXES)];
-    
-    while (s.length > 2) {
-        let match = null;
-        for (const name of allKnown) {
-            let idx = s.indexOf(name);
-            if (idx !== -1) {
-                if (!match || idx < match.idx || (idx === match.idx && name.length > match.name.length)) {
-                    match = {name, idx};
-                }
-            }
-        }
-        if (match) {
-            if (match.idx > 3) {
-                let skipped = s.slice(0, match.idx);
-                let cleaned = stripArtifacts(skipped);
-                if (isValidName(cleaned)) found.push(cleaned);
-            }
-            
-            let resolvedName = COMMON_NAMES.has(match.name) ? match.name : TRUNCATION_FIXES[match.name];
-            found.push(resolvedName);
-            s = s.substring(match.idx + match.name.length);
-        } else {
-            let cleaned = stripArtifacts(s);
-            if (isValidName(cleaned)) found.push(cleaned);
-            break;
-        }
-    }
-    return found;
-}
-
 function parseMRZName(line3) {
-    let raw = line3.replace(/<+$/, '').replace(/^I+/, '').replace(/F{2,}$|L{2,}$|J{2,}$|K{2,}$|C{2,}$|X{2,}$/g, '');
+    let raw = line3.trim().toUpperCase();
     
-    // Standard MRZ has << separating Surname and Given Names.
+    // Fix the most common OCR confusion: << read as K< or KL<
+    // This happens when Tesseract sees two < chars at low resolution
+    raw = raw.replace(/K</g, '<<');
+    
+    // Strip trailing filler chars
+    raw = raw.replace(/<+$/, '');
+    
+    // Standard MRZ: Surname<<GivenName<OtherName
     if (raw.includes('<<')) {
-        let parts = raw.split('<<');
-        let surnameRaw = parts[0];
-        let givenRaw = parts.slice(1).join('<');
-        
-        let surname = fixTruncation(stripArtifacts(surnameRaw));
-        if (!COMMON_NAMES.has(surname)) {
-             let dict = extractNamesByDictionary(surnameRaw);
-             if (dict.length > 0) surname = dict[0];
-        }
-        
-        let givenParts = givenRaw.split(/<+/).filter(p => p.length > 1);
-        let finalGiven = [];
-        for (let p of givenParts) {
-             let cp = fixTruncation(stripArtifacts(p));
-             if (COMMON_NAMES.has(cp)) {
-                 finalGiven.push(cp);
-             } else {
-                 let dict = extractNamesByDictionary(p);
-                 if (dict.length > 0) finalGiven.push(...dict);
-                 else if (isValidName(cp)) finalGiven.push(cp);
-             }
-        }
-        
-        return { surname, givenName: finalGiven.join(' '), otherName: '' };
+        const parts = raw.split('<<');
+        const surname = parts[0].replace(/[^A-Z]/g, '');
+        const givenRaw = parts.slice(1).join('<');
+        const givenNames = givenRaw.split(/<+/).filter(p => p.length > 1).join(' ');
+        return { surname, givenName: givenNames, otherName: '' };
     }
     
-    // Degraded case: No << found (e.g. IAGABACCMELLISACKIRABO or MUYUNGAK<CTIMOTHY)
-    if (raw.includes('<')) {
-        let parts = raw.split(/<+/).filter(p => p.length > 1);
-        let allExtracted = [];
-        for (let p of parts) {
-            let dict = extractNamesByDictionary(p);
-            if (dict.length > 0) allExtracted.push(...dict);
-            else {
-                let cp = fixTruncation(stripArtifacts(p));
-                if (isValidName(cp)) allExtracted.push(cp);
-            }
-        }
-        if (allExtracted.length >= 2) {
-             return { surname: allExtracted[0], givenName: allExtracted.slice(1).join(' '), otherName: '' };
-        }
+    // Fallback if << was completely lost but < remains
+    const parts = raw.split(/<+/).filter(p => p.length > 1);
+    if (parts.length >= 2) {
+        return { 
+            surname: parts[0].replace(/[^A-Z]/g, ''), 
+            givenName: parts.slice(1).join(' '), 
+            otherName: '' 
+        };
     }
     
-    // Fully glued case
-    let dictNames = extractNamesByDictionary(raw);
-    if (dictNames.length >= 2) {
-        return { surname: dictNames[0], givenName: dictNames.slice(1).join(' '), otherName: '' };
-    }
-    
-    return { surname: raw, givenName: '', otherName: '' };
+    return { surname: raw.replace(/[^A-Z]/g, ''), givenName: '', otherName: '' };
 }
 
 // --- DOB / Sex ---
@@ -430,11 +340,22 @@ async function findMRZRegion(imageCanvas) {
         ocrCanvas.width = w; ocrCanvas.height = y2 - y1;
         ocrCanvas.getContext('2d').drawImage(cropCanvas, 0, 0);
         gentleThresholding(ocrCanvas);
-        const text = await runTesseract(ocrCanvas);
+
+        // ═══════════════════════════════════════════════════════
+        // UPSCALE 2.5× — THIS IS THE FIX
+        // ═══════════════════════════════════════════════════════
+        const scaled = document.createElement('canvas');
+        scaled.width = Math.round(ocrCanvas.width * 2.5);
+        scaled.height = Math.round(ocrCanvas.height * 2.5);
+        const sCtx = scaled.getContext('2d');
+        sCtx.imageSmoothingEnabled = false; // keep edges sharp
+        sCtx.drawImage(ocrCanvas, 0, 0, scaled.width, scaled.height);
+
+        const text = await runTesseract(scaled);
         console.log('[Region ' + name + '] text:\n' + text.substring(0, 100));
         const mrz = extractMRZ(text.split('\n'));
 
-        if (mrz) return { crop: ocrCanvas, text: text, desc: `region: ${name}` };
+        if (mrz) return { crop: scaled, text: text, desc: `region: ${name}` };
     }
 
     const fallbackCanvas = document.createElement('canvas');
@@ -443,8 +364,17 @@ async function findMRZRegion(imageCanvas) {
     const fCtx = fallbackCanvas.getContext('2d');
     fCtx.drawImage(imageCanvas, 0, Math.floor(h * 0.5), w, Math.floor(h * 0.5), 0, 0, w, Math.floor(h * 0.5));
     gentleThresholding(fallbackCanvas);
-    const fallbackText = await runTesseract(fallbackCanvas, false);
-    return { crop: fallbackCanvas, text: fallbackText, desc: 'fallback:bottom50' };
+    
+    // Upscale fallback too
+    const fbScaled = document.createElement('canvas');
+    fbScaled.width = Math.round(fallbackCanvas.width * 2.5);
+    fbScaled.height = Math.round(fallbackCanvas.height * 2.5);
+    const fbCtx = fbScaled.getContext('2d');
+    fbCtx.imageSmoothingEnabled = false;
+    fbCtx.drawImage(fallbackCanvas, 0, 0, fbScaled.width, fbScaled.height);
+    
+    const fallbackText = await runTesseract(fbScaled, false);
+    return { crop: fbScaled, text: fallbackText, desc: 'fallback:bottom50' };
 }
 
 async function runTesseract(canvas, isFront = false) {
