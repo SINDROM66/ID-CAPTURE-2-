@@ -28,7 +28,9 @@ const TRUNCATION_FIXES = {
     'JAME':'JAMES','CHRISTOPHE':'CHRISTOPHER','ANDRE':'ANDREW','EMMANUE':'EMMANUEL',
     'BRIA':'BRIAN','RACHAE':'RACHAEL','NAMUKAS':'NAMUKASA','OTIEN':'OTIENO',
     'MOSE':'MOSES','JO':'JOE','KEVI':'KEVIN','ELVI':'ELVIN','PATRI':'PATRICK',
-    'SAMU':'SAMUEL','TIMOT':'TIMOTHY','CHRISTO':'CHRISTOPHER'
+    'SAMU':'SAMUEL','TIMOT':'TIMOTHY','CHRISTO':'CHRISTOPHER',
+    'KLTIMOTHY': 'TIMOTHY',
+    'KLKIMERA': 'KIMERA'
 };
 
 const NIN_CORRECTIONS = {
@@ -117,6 +119,22 @@ function extractMRZ(textLines) {
 }
 
 // --- Name Parsing ---
+function fixTruncation(name) {
+    if (TRUNCATION_FIXES[name]) return TRUNCATION_FIXES[name];
+    // Strip leading KL artifact (from << OCR confusion)
+    if (name.startsWith('KL') && name.length > 4) {
+        const remainder = name.substring(2);
+        if (COMMON_NAMES.has(remainder)) return remainder;
+        if (TRUNCATION_FIXES[remainder]) return TRUNCATION_FIXES[remainder];
+    }
+    // Strip leading K artifact (from < OCR confusion)
+    if (name.startsWith('K') && !name.startsWith('KI') && name.length > 4) {
+        const remainder = name.substring(1);
+        if (COMMON_NAMES.has(remainder)) return remainder;
+    }
+    return name;
+}
+
 function stripArtifacts(part) {
     if (part.length <= 3) return part;
     let p = part;
@@ -569,7 +587,7 @@ async function parseFrontUgandaID(imageCanvas, precomputedLines = null) {
     });
     text = result.data.text;
     lines = result.data.lines
-      .filter(l => l.confidence > 40 && l.text.trim().length > 0)
+      .filter(l => l.confidence > 25 && l.text.trim().length > 0)
       .map(l => ({
         text: l.text.trim(),
         x0: l.bbox.x0 / ocrCanvas.width,
@@ -601,31 +619,22 @@ function extractFrontDetails(text, spatialLines = null) {
         nationality: 'UGA'
     };
     
-    // Clean Tesseract's common NIN hallucination (CMO instead of CM0)
+    // Clean Tesseract's common NIN hallucination
     let cleanText = text.replace(/CMO/g, 'CM0').replace(/CFO/g, 'CF0');
-    // If it added an extra 0, making it 15 chars, this fixes it:
     cleanText = cleanText.replace(/CM00/g, 'CM0').replace(/CF00/g, 'CF0');
 
     // 1. Extract NIN (Global Search)
-    // A Ugandan NIN is exactly 14 characters: C + M/F + 12 alphanumeric
     const ninMatch = cleanText.match(/(C[MF][A-Z0-9]{12})/);
-    if (ninMatch) {
-        record.nin = ninMatch[1];
-    } else {
-        console.warn("Could not confidently extract the NIN from the front of the ID. Manual entry required.");
-    }
+    if (ninMatch) record.nin = ninMatch[1];
 
-    // 2. Extract DOB (Global Search)
+    // 2. Extract DOB
     const dobMatch = cleanText.match(/(\d{2})[\.\-\/](\d{2})[\.\-\/](\d{4})/);
-    if (dobMatch) {
-        record.dob = `${dobMatch[3]}-${dobMatch[2]}-${dobMatch[1]}`; // YYYY-MM-DD
-    }
+    if (dobMatch) record.dob = `${dobMatch[3]}-${dobMatch[2]}-${dobMatch[1]}`;
 
-    // 3. Extract Sex (Global Search near DOB or UGA)
+    // 3. Extract Sex
     if (/\bM\b/.test(cleanText) && !/\bF\b/.test(cleanText)) record.sex = 'Male';
     else if (/\bF\b/.test(cleanText) && !/\bM\b/.test(cleanText)) record.sex = 'Female';
     else {
-        // Look on lines with UGA
         const ugaLine = lines.find(l => l.includes('UGA'));
         if (ugaLine) {
             if (/\bM\b/.test(ugaLine)) record.sex = 'Male';
@@ -633,48 +642,75 @@ function extractFrontDetails(text, spatialLines = null) {
         }
     }
 
-    // 4. Extract Names using Spatial Baseline Logic
+    // 4. Extract Names — Spatial Baseline Logic (primary)
     if (spatialLines && spatialLines.length > 0) {
-      const slope = estimateTextSlope(spatialLines);
-      const baseTolerance = 0.04 + (Math.abs(slope) * 0.15);
+        const slope = estimateTextSlope(spatialLines);
+        const baseTolerance = 0.04 + (Math.abs(slope) * 0.15);
 
-      record.surname = extractRightOf(/SURNAME|SURNAM|URNAME/, spatialLines, slope, baseTolerance);
-      record.givenName = extractRightOf(/GIVEN\s*NAME|GIVEN|NAME\(S\)/, spatialLines, slope, baseTolerance);
+        record.surname = extractRightOf(/SURNAME|SURNAM|URNAME/, spatialLines, slope, baseTolerance);
+        record.givenName = extractRightOf(/GIVEN\s*NAME|GIVEN|NAME\(S\)/, spatialLines, slope, baseTolerance);
 
-      // Fallback: if surname missing, line before GIVEN NAME is often the surname
-      if (!record.surname) {
-        const givenIdx = spatialLines.findIndex(l => /(?:GIVEN|GIVEN NAME)/i.test(l.text));
-        if (givenIdx > 0) {
-          record.surname = spatialLines[givenIdx - 1].text.replace(/[^A-Z]/g, '');
+        // Fallback: if surname missing, line before GIVEN NAME is often the surname
+        if (!record.surname) {
+            const givenIdx = spatialLines.findIndex(l => /(?:GIVEN|GIVEN NAME)/i.test(l.text));
+            if (givenIdx > 0) {
+                record.surname = spatialLines[givenIdx - 1].text.replace(/[^A-Z]/g, '');
+            }
         }
-      }
+
+        // ═══════════════════════════════════════════════════════
+        // GEOMETRIC FALLBACK: When anchors are completely missing
+        // ═══════════════════════════════════════════════════════
+        if (!record.surname || !record.givenName) {
+            // On a Ugandan ID front:
+            // - Photo occupies left 0-35%
+            // - Surname is in upper-right quadrant (y: 25-45%, x: 35-90%)
+            // - Given Name is below Surname (y: 40-60%, x: 35-90%)
+            // - Both are typically ALL CAPS, 3+ chars
+            
+            const valueLines = spatialLines.filter(l => 
+                l.cx > 0.35 && l.cx < 0.90 &&
+                /^[A-Z]{3,}$/.test(l.text.replace(/[^A-Z]/g, ''))
+            );
+
+            // Sort by Y position (top to bottom)
+            const sortedValues = valueLines.sort((a, b) => a.cy - b.cy);
+
+            if (!record.surname && sortedValues.length > 0) {
+                // First all-caps value in upper half is likely surname
+                const first = sortedValues[0];
+                if (first.cy > 0.20 && first.cy < 0.50) {
+                    record.surname = first.text.replace(/[^A-Z]/g, '');
+                }
+            }
+
+            if (!record.givenName && sortedValues.length > 1) {
+                // Second all-caps value is likely given name
+                const second = sortedValues[1];
+                if (second.cy > 0.35 && second.cy < 0.70) {
+                    record.givenName = second.text.replace(/[^A-Z\s]/g, '').trim();
+                }
+            }
+        }
     } else {
-      // Legacy line-proximity fallback (no bounding boxes available)
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].toUpperCase();
-        if (/SURNAME|SURNAM|URNAME/.test(line) && !record.surname) {
-          const remainder = line.replace(/.*(?:SURNAME|SURNAM|URNAME)\s*/, '').replace(/[^A-Z]/g, '');
-          if (remainder.length > 2) {
-            record.surname = remainder;
-          } else if (i + 1 < lines.length) {
-            record.surname = lines[i+1].replace(/[^A-Z]/g, '');
-          }
+        // Legacy line-proximity fallback
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].toUpperCase();
+            if (/SURNAME|SURNAM|URNAME/.test(line) && !record.surname) {
+                const remainder = line.replace(/.*(?:SURNAME|SURNAM|URNAME)\s*/, '').replace(/[^A-Z]/g, '');
+                if (remainder.length > 2) record.surname = remainder;
+                else if (i + 1 < lines.length) record.surname = lines[i+1].replace(/[^A-Z]/g, '');
+            }
+            if (/(?:GIVEN|GIVEN NAME|GIVEN NAME\(S\)|NAME\(S\))/.test(line) && !record.givenName) {
+                const remainder = line.replace(/.*(?:GIVEN NAME|GIVEN|NAME\(S\))\s*/, '').replace(/[^A-Z\s]/g, '').trim();
+                if (remainder.length > 2) record.givenName = remainder;
+                else if (i + 1 < lines.length) record.givenName = lines[i+1].replace(/[^A-Z\s]/g, '').trim();
+            }
         }
-        if (/(?:GIVEN|GIVEN NAME|GIVEN NAME\(S\)|NAME\(S\))/.test(line) && !record.givenName) {
-          const remainder = line.replace(/.*(?:GIVEN NAME|GIVEN|NAME\(S\))\s*/, '').replace(/[^A-Z\s]/g, '').trim();
-          if (remainder.length > 2) {
-            record.givenName = remainder;
-          } else if (i + 1 < lines.length) {
-            record.givenName = lines[i+1].replace(/[^A-Z\s]/g, '').trim();
-          }
+        if (!record.surname) {
+            const givenIdx = lines.findIndex(l => /(?:GIVEN|GIVEN NAME)/i.test(l));
+            if (givenIdx > 0) record.surname = lines[givenIdx - 1].replace(/[^A-Z]/g, '');
         }
-      }
-      if (!record.surname) {
-        const givenIdx = lines.findIndex(l => /(?:GIVEN|GIVEN NAME)/i.test(l));
-        if (givenIdx > 0) {
-          record.surname = lines[givenIdx - 1].replace(/[^A-Z]/g, '');
-        }
-      }
     }
 
     return record;
