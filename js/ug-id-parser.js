@@ -118,33 +118,190 @@ function extractMRZ(textLines) {
     return null;
 }
 
+// --- Name Parsing Helpers ---
+function fixTruncation(name) {
+    if (TRUNCATION_FIXES[name]) return TRUNCATION_FIXES[name];
+    if (name.startsWith('KL') && name.length > 4) {
+        const remainder = name.substring(2);
+        if (COMMON_NAMES.has(remainder)) return remainder;
+        if (TRUNCATION_FIXES[remainder]) return TRUNCATION_FIXES[remainder];
+    }
+    if (name.startsWith('K') && !name.startsWith('KI') && name.length > 4) {
+        const remainder = name.substring(1);
+        if (COMMON_NAMES.has(remainder)) return remainder;
+    }
+    return name;
+}
+
+function stripArtifacts(part) {
+    if (part.length <= 3) return part;
+    let p = part;
+    
+    // Strip leading I, 1, C (never start real names)
+    if (/^[I1C]/.test(p)) p = p.slice(1);
+    
+    // Strip leading L, K, E, S ONLY if remainder is a known name
+    // Fixes LTIMOTHY → TIMOTHY, preserves LYOMOKI
+    if (/^[LKES]/.test(p)) {
+        const remainder = p.slice(1);
+        if (COMMON_NAMES.has(remainder) || TRUNCATION_FIXES[remainder]) {
+            p = remainder;
+        }
+    }
+    
+    // Strip trailing C, K, X, L (common OCR artifacts at end)
+    if (/[CKXL]{1,2}$/.test(p)) {
+        const withoutTrail = p.replace(/[CKXL]{1,2}$/, '');
+        if (withoutTrail.length >= 2) p = withoutTrail;
+    }
+    
+    return p;
+}
+
+function isValidName(part) {
+    if (part.length <= 1) return false;
+    if (/^[KLCXSP]{2,}$/.test(part) && !COMMON_NAMES.has(part)) return false;
+    return true;
+}
+
+function extractNamesByDictionary(str) {
+    const found = [];
+    let s = str;
+    const allKnown = [...Array.from(COMMON_NAMES), ...Object.keys(TRUNCATION_FIXES)];
+    
+    while (s.length > 2) {
+        let match = null;
+        for (const name of allKnown) {
+            let idx = s.indexOf(name);
+            if (idx !== -1) {
+                if (!match || idx < match.idx || (idx === match.idx && name.length > match.name.length)) {
+                    match = {name, idx};
+                }
+            }
+        }
+        if (match) {
+            if (match.idx > 3) {
+                let skipped = s.slice(0, match.idx);
+                let cleaned = stripArtifacts(skipped);
+                if (isValidName(cleaned)) found.push(cleaned);
+            }
+            
+            let resolvedName = COMMON_NAMES.has(match.name) ? match.name : TRUNCATION_FIXES[match.name];
+            found.push(resolvedName);
+            s = s.substring(match.idx + match.name.length);
+        } else {
+            let cleaned = stripArtifacts(s);
+            if (isValidName(cleaned)) found.push(cleaned);
+            break;
+        }
+    }
+    return found;
+}
+
 function parseMRZName(line3) {
     let raw = line3.trim().toUpperCase();
     
-    // Fix the most common OCR confusion: << read as K< or KL<
-    // This happens when Tesseract sees two < chars at low resolution
+    // ═══════════════════════════════════════════════════════
+    // STEP 1: Fix 2-char artifacts where BOTH < were misread
+    // e.g. AGABACKMELLISA → AGABA<<MELLISA
+    // ═══════════════════════════════════════════════════════
+    const doubleArtifacts = ['CK','CL','LC','LK','KC','KL','EC','EL','EK','LE','KE','CE','SL','SK','SC','SI','1C','1L','3C','3L','5C','5L'];
+    const doubleRe = new RegExp('([A-Z]{3,})(' + doubleArtifacts.join('|') + ')([A-Z]{3,})', 'g');
+    raw = raw.replace(doubleRe, '$1<<$3');
+    
+    // ═══════════════════════════════════════════════════════
+    // STEP 2: Fix 1-char artifacts where one < was misread
+    // e.g. MUYUNGALK<LTIMOTHY → MUYUNGA<<LTIMOTHY
+    // ═══════════════════════════════════════════════════════
     raw = raw.replace(/K</g, '<<');
+    raw = raw.replace(/L</g, '<<');
+    raw = raw.replace(/C</g, '<<');
+    raw = raw.replace(/E</g, '<<');
+    raw = raw.replace(/I</g, '<<');
+    raw = raw.replace(/S</g, '<<');
+    raw = raw.replace(/1</g, '<<');
+    raw = raw.replace(/3</g, '<<');
+    raw = raw.replace(/5</g, '<<');
     
-    // Strip trailing filler chars
-    raw = raw.replace(/<+$/, '');
-    
-    // Standard MRZ: Surname<<GivenName<OtherName
-    if (raw.includes('<<')) {
-        const parts = raw.split('<<');
-        const surname = parts[0].replace(/[^A-Z]/g, '');
-        const givenRaw = parts.slice(1).join('<');
-        const givenNames = givenRaw.split(/<+/).filter(p => p.length > 1).join(' ');
-        return { surname, givenName: givenNames, otherName: '' };
+    // ═══════════════════════════════════════════════════════
+    // STEP 3: Fix single < read as L/K/C before known names
+    // e.g. LTIMOTHY → <TIMOTHY (but NOT LYOMOKI → <YOMOKI)
+    // ═══════════════════════════════════════════════════════
+    for (const name of COMMON_NAMES) {
+        raw = raw.replace(new RegExp('([KLCESI135])' + name, 'g'), '<' + name);
+    }
+    for (const trunc of Object.keys(TRUNCATION_FIXES)) {
+        raw = raw.replace(new RegExp('([KLCESI135])' + trunc, 'g'), '<' + trunc);
     }
     
-    // Fallback if << was completely lost but < remains
-    const parts = raw.split(/<+/).filter(p => p.length > 1);
-    if (parts.length >= 2) {
-        return { 
-            surname: parts[0].replace(/[^A-Z]/g, ''), 
-            givenName: parts.slice(1).join(' '), 
-            otherName: '' 
-        };
+    // Strip trailing filler and leading I artifacts
+    raw = raw.replace(/<+$/, '').replace(/^I+/, '');
+    
+    // ═══════════════════════════════════════════════════════
+    // STEP 4: Standard MRZ split
+    // ═══════════════════════════════════════════════════════
+    if (raw.includes('<<')) {
+        let parts = raw.split('<<');
+        let surnameRaw = parts[0];
+        let givenRaw = parts.slice(1).join('<');
+        
+        let surname = fixTruncation(stripArtifacts(surnameRaw));
+        if (!COMMON_NAMES.has(surname)) {
+             let dict = extractNamesByDictionary(surnameRaw);
+             if (dict.length > 0) surname = dict[0];
+        }
+        
+        let givenParts = givenRaw.split(/<+/).filter(p => p.length > 1);
+        let finalGiven = [];
+        for (let p of givenParts) {
+             let cp = fixTruncation(stripArtifacts(p));
+             if (COMMON_NAMES.has(cp)) {
+                 finalGiven.push(cp);
+             } else {
+                 let dict = extractNamesByDictionary(p);
+                 if (dict.length > 0) finalGiven.push(...dict);
+                 else if (isValidName(cp)) finalGiven.push(cp);
+             }
+        }
+        
+        // Validate: if surname is garbage, fall back to dictionary
+        if (surname.length < 2 || /[^A-Z]/.test(surname)) {
+            return parseMRZNameDictionary(raw);
+        }
+        
+        return { surname, givenName: finalGiven.join(' '), otherName: '' };
+    }
+    
+    // ═══════════════════════════════════════════════════════
+    // STEP 5: Fallback — no << found, use dictionary
+    // ═══════════════════════════════════════════════════════
+    return parseMRZNameDictionary(raw);
+}
+
+// Helper: dictionary fallback when rigid split fails
+function parseMRZNameDictionary(raw) {
+    if (raw.includes('<')) {
+        let parts = raw.split(/<+/).filter(p => p.length > 1);
+        let allExtracted = [];
+        for (let p of parts) {
+            let dict = extractNamesByDictionary(p);
+            if (dict.length > 0) allExtracted.push(...dict);
+            else {
+                let cp = fixTruncation(stripArtifacts(p));
+                if (isValidName(cp)) allExtracted.push(cp);
+            }
+        }
+        if (allExtracted.length >= 2) {
+             return { surname: allExtracted[0], givenName: allExtracted.slice(1).join(' '), otherName: '' };
+        }
+    }
+    
+    let dictNames = extractNamesByDictionary(raw);
+    if (dictNames.length >= 2) {
+        return { surname: dictNames[0], givenName: dictNames.slice(1).join(' '), otherName: '' };
+    }
+    if (dictNames.length === 1) {
+        return { surname: dictNames[0], givenName: '', otherName: '' };
     }
     
     return { surname: raw.replace(/[^A-Z]/g, ''), givenName: '', otherName: '' };
@@ -340,22 +497,11 @@ async function findMRZRegion(imageCanvas) {
         ocrCanvas.width = w; ocrCanvas.height = y2 - y1;
         ocrCanvas.getContext('2d').drawImage(cropCanvas, 0, 0);
         gentleThresholding(ocrCanvas);
-
-        // ═══════════════════════════════════════════════════════
-        // UPSCALE 2.5× — THIS IS THE FIX
-        // ═══════════════════════════════════════════════════════
-        const scaled = document.createElement('canvas');
-        scaled.width = Math.round(ocrCanvas.width * 2.5);
-        scaled.height = Math.round(ocrCanvas.height * 2.5);
-        const sCtx = scaled.getContext('2d');
-        sCtx.imageSmoothingEnabled = false; // keep edges sharp
-        sCtx.drawImage(ocrCanvas, 0, 0, scaled.width, scaled.height);
-
-        const text = await runTesseract(scaled);
+        const text = await runTesseract(ocrCanvas);
         console.log('[Region ' + name + '] text:\n' + text.substring(0, 100));
         const mrz = extractMRZ(text.split('\n'));
 
-        if (mrz) return { crop: scaled, text: text, desc: `region: ${name}` };
+        if (mrz) return { crop: ocrCanvas, text: text, desc: `region: ${name}` };
     }
 
     const fallbackCanvas = document.createElement('canvas');
@@ -364,17 +510,8 @@ async function findMRZRegion(imageCanvas) {
     const fCtx = fallbackCanvas.getContext('2d');
     fCtx.drawImage(imageCanvas, 0, Math.floor(h * 0.5), w, Math.floor(h * 0.5), 0, 0, w, Math.floor(h * 0.5));
     gentleThresholding(fallbackCanvas);
-    
-    // Upscale fallback too
-    const fbScaled = document.createElement('canvas');
-    fbScaled.width = Math.round(fallbackCanvas.width * 2.5);
-    fbScaled.height = Math.round(fallbackCanvas.height * 2.5);
-    const fbCtx = fbScaled.getContext('2d');
-    fbCtx.imageSmoothingEnabled = false;
-    fbCtx.drawImage(fallbackCanvas, 0, 0, fbScaled.width, fbScaled.height);
-    
-    const fallbackText = await runTesseract(fbScaled, false);
-    return { crop: fbScaled, text: fallbackText, desc: 'fallback:bottom50' };
+    const fallbackText = await runTesseract(fallbackCanvas, false);
+    return { crop: fallbackCanvas, text: fallbackText, desc: 'fallback:bottom50' };
 }
 
 async function runTesseract(canvas, isFront = false) {
